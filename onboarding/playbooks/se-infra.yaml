@@ -1,0 +1,35 @@
+id: se-infra
+name: Infra Software Engineer – Day 0/1
+audience: new-hire
+tasks:
+  - id: welcome
+    kind: info
+    title: "Welcome {{user.displayName}}!"
+    description: "We’re excited you’re here 🎉. Let’s get your access and sandbox ready."
+
+
+  - id: join-teams
+    kind: manual
+    title: "Join Teams channels"
+    description: "Join #eng-announcements and #platform. Ask your buddy to add you if needed."
+
+
+  - id: sandbox-rg
+    kind: tool
+    title: "Create personal sandbox resource group"
+    description: "We’ll create rg-{{user.alias}}-sandbox in usgovvirginia"
+    tool:
+    name: "azure.create_resource_group"
+    args:
+    name: "rg-{{user.alias}}-sandbox"
+    location: "usgovvirginia"
+    tags:
+    owner: "{{user.upn}}"
+    env: "dev"
+    costCenter: "0000"
+
+
+  - id: repo-access
+    kind: manual
+    title: "Request membership in org: developers"
+    description: "Ask your manager to add you to the GitHub team 'developers'."

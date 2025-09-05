@@ -1,0 +1,23 @@
+{
+    "name": "auth",
+    "version": "0.1.0",
+    "type": "module",
+    "main": "dist/index.js",
+    "types": "dist/index.d.ts",
+    "scripts": {
+        "build": "tsc -p tsconfig.json"
+    },
+    "dependencies": {
+        "@azure/arm-appservice": "^17.0.0",
+        "@azure/arm-authorization": "^9.0.0",
+        "@azure/arm-containerservice": "^22.2.0",
+        "@azure/arm-keyvault": "^3.2.0",
+        "@azure/arm-resources": "^6.0.0",
+        "@azure/arm-storage": "^18.0.0",
+        "@azure/identity": "^4.4.0",
+        "@octokit/app": "^15.0.0",
+        "@octokit/rest": "^21.0.0",
+        "dotenv": "^16.4.5",
+        "@microsoft/microsoft-graph-client": "3.0.7"
+    }
+}

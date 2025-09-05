@@ -1,0 +1,75 @@
+id: mission-owner
+name: Mission Owner – Day 0/1
+audience: mission-owner
+
+tasks:
+  - id: welcome
+    kind: info
+    title: "Welcome {{user.displayName}} — let’s set up your mission workspace."
+
+  - id: baseline-rg
+    kind: tool
+    title: "Create baseline RG"
+    description: "Create rg-{{user.alias}}-baseline in usgovvirginia (tagged)."
+    tool:
+      name: "azure.create_resource_group"
+      args:
+        name: "rg-{{user.alias}}-baseline"
+        location: "usgovvirginia"
+        tags:
+          owner: "{{user.upn}}"
+          env: "dev"
+          costCenter: "0000"
+
+  - id: deploy-baseline
+    kind: tool
+    title: "Deploy baseline infra (Bicep URL)"
+    description: "Deploy networking/monitoring from a curated template."
+    tool:
+      name: "azure.deploy_bicep_rg_from_url"
+      args:
+        resourceGroupName: "rg-{{user.alias}}-baseline"
+        deploymentName: "baseline-{{user.alias}}"
+        templateUrl: "https://raw.githubusercontent.com/pedemoorg/platform_configs/main/infra/bicep/baseline/main.bicep"
+        parameters:
+          namePrefix: "rg-{{user.alias}}-baseline"
+          environment: "dev"
+          tags:
+            owner: "{{user.upn}}"
+            env: "dev"
+            costCenter: "0000"
+
+  - id: mission-repo
+    kind: tool
+    title: "Create mission repo (with Q&A)"
+    description: "We’ll ask a couple questions (template, name, privacy) and then create the repo."
+    tool:
+      name: "github.repo_wizard_mission_owner"
+      args:
+        owner: "PEDemoOrg"
+        defaultBranch: "main"
+        visibility: "private"
+        newRepoName: "mission-{{user.alias}}-infra"
+        teamSlug: "developers"
+        # Optional hints (Supervisor can confirm/override):
+        templateOwner: "PEDemoOrg"
+        templateRepo: "ModernUIRepository"
+        labels:
+          - name: "owner:{{user.alias}}"
+            color: "0e8a16"
+
+  - id: teams-channel
+    kind: tool
+    title: "Create Teams channel"
+    description: "Creates #mission-{{user.alias}} in your governance team."
+    tool:
+      name: "teams.create_channel"
+      args:
+        teamId: "<governance-team-id>"
+        displayName: "mission-{{user.alias}}"
+        description: "Mission comms"
+
+  - id: join-announce
+    kind: manual
+    title: "Join #eng-announcements and #platform"
+    description: "Ask your buddy to add you if needed."

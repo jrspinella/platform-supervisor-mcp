@@ -1,0 +1,20 @@
+{
+"name": "platform-agents",
+"private": true,
+"packageManager": "pnpm@9.0.0",
+"scripts": {
+"build": "pnpm -r --filter ./packages/* --filter ./servers/* --filter ./apps/* run build",
+"dev:github": "pnpm --filter github-mcp run dev",
+"dev:azure": "pnpm --filter azure-mcp run dev",
+"dev:router": "pnpm --filter router run dev",
+"dev:supervisor": "pnpm --filter supervisor run dev"
+},
+"devDependencies": {
+"typescript": "~5.5.4",
+"tsx": "^4.16.0",
+"@types/node": "^20.14.10",
+"zod": "^3.23.8",
+"zod-to-json-schema": "^3.23.5",
+"dotenv": "^16.4.5"
+}
+}
