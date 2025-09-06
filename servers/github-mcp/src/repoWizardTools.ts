@@ -1,24 +1,28 @@
 import { z } from "zod";
 import type { Octokit } from "@octokit/rest";
 
-/** Helper: paginate any Octokit method */
-async function paginate<T>(gh: Octokit, method: any, params: any): Promise<T[]> {
-  const res: T[] = [];
-  for await (const page of (gh as any).paginate.iterator(method, params)) {
-    res.push(...(page.data as T[]));
+// Simple, robust pagination using core routes
+async function listOrgReposCore(gh: any, org: string, per_page = 100) {
+  const all: any[] = [];
+  for (let page = 1; page <= 50; page++) { // hard cap
+    const res = await gh.request("GET /orgs/{org}/repos", {
+      org, per_page, page, type: "all"
+    });
+    const batch = Array.isArray(res.data) ? res.data : [];
+    all.push(...batch);
+    if (batch.length < per_page) break;
   }
-  return res;
+  return all;
 }
 
-/**
- * ghFactory MUST provide:
- *   - forInstallation(ownerOrOrg?: string): Promise<Octokit>
- *       Returns an installation-scoped Octokit for the given owner/org (or a sensible default).
- */
+// Guard: use rest if present, otherwise core routes
+function hasRest(gh: any) {
+  return !!(gh && gh.rest && gh.rest.repos);
+}
+
 export function repoWizardTools(ghFactory: { forInstallation: (ownerOrOrg?: string) => Promise<Octokit> }) {
   const nameRegex = /^[A-Za-z0-9._-]{1,100}$/;
 
-  // ---------- Base tools ----------
   const listTemplatesSchema = z.object({
     org: z.string(),
     per_page: z.number().int().min(1).max(100).default(100),
@@ -27,7 +31,7 @@ export function repoWizardTools(ghFactory: { forInstallation: (ownerOrOrg?: stri
   const createFromTemplateSchema = z.object({
     templateOwner: z.string(),
     templateRepo: z.string(),
-    owner: z.string(),                // target org or username
+    owner: z.string(),
     name: z.string().regex(nameRegex, "Invalid repository name"),
     description: z.string().optional(),
     private: z.boolean().default(true),
@@ -35,10 +39,10 @@ export function repoWizardTools(ghFactory: { forInstallation: (ownerOrOrg?: stri
   }).strict();
 
   const assignTeamPermSchema = z.object({
-    owner: z.string(),                // org (not user)
+    owner: z.string(),
     repo: z.string(),
     teamSlug: z.string(),
-    permission: z.enum(["pull","triage","push","maintain","admin"]),
+    permission: z.enum(["pull", "triage", "push", "maintain", "admin"]),
   }).strict();
 
   const protectDefaultBranchSchema = z.object({
@@ -50,35 +54,42 @@ export function repoWizardTools(ghFactory: { forInstallation: (ownerOrOrg?: stri
     enforceAdmins: z.boolean().default(true),
   }).strict();
 
-  // ---------- Wizard (mission owner) ----------
   const wizardSchema = z.object({
-    // Template & target
-    templateOwner: z.string().optional(),    // optional if you plan to ask via Supervisor; required to execute
+    templateOwner: z.string().optional(),
     templateRepo: z.string().optional(),
-    owner: z.string().optional(),            // target org/user; required to execute
-    // Naming & visibility
+    owner: z.string().optional(),
     newRepoName: z.string().regex(nameRegex, "Invalid repository name").optional(),
-    suggestName: z.string().optional(),      // used only if newRepoName omitted (playbook will usually render final name)
-    visibility: z.enum(["private","public","internal"]).default("private"),
+    suggestName: z.string().optional(),
+    visibility: z.enum(["private", "public", "internal"]).default("private"),
     description: z.string().optional(),
     defaultBranch: z.string().default("main"),
     labels: z.array(z.object({ name: z.string(), color: z.string().optional(), description: z.string().optional() })).optional(),
     teamSlug: z.string().optional(),
-    // Control
     dryRun: z.boolean().default(true),
   }).strict();
 
   return [
-    // List template repos in an org (is_template=true)
     {
       name: "github.list_template_repos",
       description: "List repositories in an org that are marked as templates (is_template=true).",
       inputSchema: listTemplatesSchema,
       handler: async ({ org, per_page }: z.infer<typeof listTemplatesSchema>) => {
         const gh = await ghFactory.forInstallation(org);
-        const repos = await paginate<any>(gh, gh.rest.repos.listForOrg, { org, per_page, type: "all" });
+        let repos: any[] = [];
+        if (hasRest(gh)) {
+          // Prefer rest+paginate if available
+          if ((gh as any).paginate?.iterator) {
+            for await (const page of (gh as any).paginate.iterator((gh as any).rest.repos.listForOrg, { org, per_page, type: "all" })) {
+              repos.push(...page.data);
+            }
+          } else {
+            repos = await listOrgReposCore(gh, org, per_page);
+          }
+        } else {
+          repos = await listOrgReposCore(gh, org, per_page);
+        }
         const templates = repos
-          .filter((r: any) => r.is_template)
+          .filter((r: any) => r && r.is_template)
           .map((r: any) => ({
             name: r.name,
             full_name: r.full_name,
@@ -90,7 +101,6 @@ export function repoWizardTools(ghFactory: { forInstallation: (ownerOrOrg?: stri
       },
     },
 
-    // Generate repo from a template
     {
       name: "github.create_repo_from_template",
       description: "Generate a new repository from a template repo (template must have is_template=true).",
@@ -110,58 +120,61 @@ export function repoWizardTools(ghFactory: { forInstallation: (ownerOrOrg?: stri
       },
     },
 
-    // Team permissions on repo
     {
       name: "github.assign_team_permission",
       description: "Grant a team permission (pull|triage|push|maintain|admin) on a repo.",
       inputSchema: assignTeamPermSchema,
       handler: async ({ owner, repo, teamSlug, permission }: z.infer<typeof assignTeamPermSchema>) => {
         const gh = await ghFactory.forInstallation(owner);
-        const res = await gh.rest.teams.addOrUpdateRepoPermissionsInOrg({
-          org: owner,
-          team_slug: teamSlug,
-          owner,
-          repo,
-          permission,
+        if (hasRest(gh)) {
+          const res = await (gh as any).rest.teams.addOrUpdateRepoPermissionsInOrg({ org: owner, team_slug: teamSlug, owner, repo, permission });
+          return { content: [{ type: "json" as const, json: { status: res.status } }] };
+        }
+        await gh.request("PUT /orgs/{org}/teams/{team_slug}/repos/{owner}/{repo}", {
+          org: owner, team_slug: teamSlug, owner, repo, permission
         });
-        return { content: [{ type: "json" as const, json: { status: res.status } }] };
+        return { content: [{ type: "json" as const, json: { status: 200 } }] };
       },
     },
 
-    // Branch protection
     {
       name: "github.protect_default_branch",
       description: "Apply a sensible default-branch protection policy.",
       inputSchema: protectDefaultBranchSchema,
       handler: async ({ owner, repo, branch, requirePRReviews, requiredApprovingReviewCount, enforceAdmins }: z.infer<typeof protectDefaultBranchSchema>) => {
         const gh = await ghFactory.forInstallation(owner);
-        await gh.rest.repos.updateBranchProtection({
-          owner, repo, branch,
+        const protectionBody: any = {
           required_status_checks: null,
           enforce_admins: enforceAdmins,
           restrictions: null,
-          required_pull_request_reviews: requirePRReviews ? { required_approving_review_count: requiredApprovingReviewCount } : null,
           allow_force_pushes: false,
           allow_deletions: false,
-        });
+        };
+        if (requirePRReviews) {
+          protectionBody.required_pull_request_reviews = { required_approving_review_count: requiredApprovingReviewCount };
+        }
+        if (hasRest(gh)) {
+          await (gh as any).rest.repos.updateBranchProtection({ owner, repo, branch, ...protectionBody });
+        } else {
+          await gh.request("PUT /repos/{owner}/{repo}/branches/{branch}/protection", {
+            owner, repo, branch, ...protectionBody
+          });
+        }
         return { content: [{ type: "text" as const, text: `Branch protection applied to ${owner}/${repo}@${branch}` }] };
       },
     },
 
-    // -------- Mission Owner Wizard (plan/execute in one tool) --------
     {
       name: "github.repo_wizard_mission_owner",
       description: "Mission Owner repo wizard: plan or execute create-from-template + protections + team + labels. Defaults to dryRun=true.",
       inputSchema: wizardSchema,
       handler: async (args: z.infer<typeof wizardSchema>) => {
-        // derive effective values
         const owner = args.owner;
         const templateOwner = args.templateOwner;
         const templateRepo = args.templateRepo;
         const name = args.newRepoName || args.suggestName;
         const isPrivate = args.visibility !== "public";
 
-        // Build the plan structure
         const plan = {
           action: "create_repo_from_template",
           dryRun: args.dryRun,
@@ -179,24 +192,21 @@ export function repoWizardTools(ghFactory: { forInstallation: (ownerOrOrg?: stri
           },
         };
 
-        // If we don't have enough inputs, return the plan-only with hints (Supervisor can ask follow-ups)
         if (!owner || !templateOwner || !templateRepo || !name) {
           return { content: [{ type: "json" as const, json: { ...plan, ready: false, missing: { owner: !owner, templateOwner: !templateOwner, templateRepo: !templateRepo, name: !name } } }] };
         }
 
-        // Always validate template exists & is_template
-        const appScopedGh = await ghFactory.forInstallation(templateOwner);
-        const tmpl = await appScopedGh.request("GET /repos/{owner}/{repo}", { owner: templateOwner, repo: templateRepo });
-        if (!tmpl.data.is_template) {
+        // Template must exist & be a template
+        const tmplGh = await ghFactory.forInstallation(templateOwner);
+        const tmplRes = await (tmplGh as any).request("GET /repos/{owner}/{repo}", { owner: templateOwner, repo: templateRepo });
+        if (!tmplRes?.data?.is_template) {
           return { content: [{ type: "text" as const, text: `Template ${templateOwner}/${templateRepo} is not marked as a template` }], isError: true };
         }
 
-        // Dry run: return the plan without side-effects
         if (args.dryRun) {
           return { content: [{ type: "json" as const, json: { ...plan, ready: true } }] };
         }
 
-        // Execute against the target owner installation
         const gh = await ghFactory.forInstallation(owner);
         const result: any = { dryRun: false, steps: [] };
 
@@ -212,7 +222,7 @@ export function repoWizardTools(ghFactory: { forInstallation: (ownerOrOrg?: stri
         });
         result.steps.push({ step: "generate", status: gen.status });
 
-        // 2) Branch protection (best-effort)
+        // 2) Branch protection
         try {
           await gh.request("PUT /repos/{owner}/{repo}/branches/{branch}/protection", {
             owner, repo: name, branch: args.defaultBranch || "main",
@@ -220,6 +230,8 @@ export function repoWizardTools(ghFactory: { forInstallation: (ownerOrOrg?: stri
             enforce_admins: true,
             required_pull_request_reviews: { required_approving_review_count: 1 },
             restrictions: null,
+            allow_force_pushes: false,
+            allow_deletions: false,
           });
           result.steps.push({ step: "protect_branch", status: "ok" });
         } catch (e: any) {
@@ -229,7 +241,7 @@ export function repoWizardTools(ghFactory: { forInstallation: (ownerOrOrg?: stri
         // 3) Team permission (optional)
         if (args.teamSlug) {
           try {
-            await gh.rest.teams.addOrUpdateRepoPermissionsInOrg({
+            await gh.request("PUT /orgs/{org}/teams/{team_slug}/repos/{owner}/{repo}", {
               org: owner, team_slug: args.teamSlug, owner, repo: name, permission: "push",
             });
             result.steps.push({ step: "team_permission", status: "ok", team: args.teamSlug });
@@ -238,11 +250,13 @@ export function repoWizardTools(ghFactory: { forInstallation: (ownerOrOrg?: stri
           }
         }
 
-        // 4) Seed labels (optional, best-effort)
+        // 4) Labels (optional)
         if (args.labels?.length) {
           for (const L of args.labels) {
             try {
-              await gh.issues.createLabel({ owner, repo: name, name: L.name, color: L.color || "ededed", description: L.description || "" });
+              await gh.request("POST /repos/{owner}/{repo}/labels", {
+                owner, repo: name, name: L.name, color: L.color || "ededed", description: L.description || ""
+              });
               result.steps.push({ step: "label", name: L.name, status: "ok" });
             } catch (e: any) {
               result.steps.push({ step: "label", name: L.name, status: "skip", error: String(e?.message || e) });

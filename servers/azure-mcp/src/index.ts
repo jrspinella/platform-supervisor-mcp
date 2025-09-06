@@ -369,7 +369,55 @@ const tools = [
             const kubeconfig = Buffer.from(kc.value!).toString("utf8");
             return { content: [{ type: "text" as const, text: kubeconfig }] };
         }
-    }
+    },
+    // --- Add near your other imports
+    // (nothing extra needed if you already have `web` and `keyvault` clients)
+
+    // --- Add inside your `tools` array ---
+
+    {
+        name: "azure.web_assign_system_identity",
+        description: "Enable system-assigned managed identity on a Web App. Returns principalId.",
+        inputSchema: z.object({
+            resourceGroupName: z.string(),
+            name: z.string()
+        }),
+        handler: async (args: { resourceGroupName: string; name: string }) => {
+            const site = await web.webApps.update(
+                args.resourceGroupName,
+                args.name,
+                { identity: { type: "SystemAssigned" } } as any
+            );
+            return {
+                content: [{
+                    type: "json" as const,
+                    json: {
+                        name: args.name,
+                        principalId: site.identity?.principalId,
+                        tenantId: site.identity?.tenantId
+                    }
+                }]
+            };
+        }
+    },
+
+    {
+        name: "azure.web_set_app_settings",
+        description: "Merge app settings (key/value). Use Key Vault refs like @Microsoft.KeyVault(SecretUri=...).",
+        inputSchema: z.object({
+            resourceGroupName: z.string(),
+            name: z.string(),
+            settings: z.record(z.string())
+        }),
+        handler: async (args: { resourceGroupName: string; name: string; settings: Record<string, string> }) => {
+            const res = await web.webApps.updateApplicationSettings(
+                args.resourceGroupName,
+                args.name,
+                { properties: args.settings }
+            );
+            return { content: [{ type: "json" as const, json: res }] };
+        }
+    },
 ];
 
 console.log(`[azure-mcp] starting on :${PORT} pid=${process.pid}`);

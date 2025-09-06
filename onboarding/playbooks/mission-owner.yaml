@@ -1,6 +1,10 @@
 id: mission-owner
 name: Mission Owner – Day 0/1
 audience: mission-owner
+summary: >
+  You are about to run the onboarding agent. This agent helps you create a sandbox resource group, deploys baseline infra from a curated Bicep template,
+  provisions a mission GitHub repo from a template with protections, sets up your Teams channel,
+  and points you to a couple of manual follow-ups.
 
 tasks:
   - id: welcome
@@ -10,11 +14,11 @@ tasks:
   - id: baseline-rg
     kind: tool
     title: "Create baseline RG"
-    description: "Create rg-{{user.alias}}-baseline in usgovvirginia (tagged)."
+    description: "Create rg-{{user.alias}}-sandbox in usgovvirginia (tagged)."
     tool:
       name: "azure.create_resource_group"
       args:
-        name: "rg-{{user.alias}}-baseline"
+        name: "rg-{{user.alias}}-sandbox"
         location: "usgovvirginia"
         tags:
           owner: "{{user.upn}}"
@@ -28,11 +32,11 @@ tasks:
     tool:
       name: "azure.deploy_bicep_rg_from_url"
       args:
-        resourceGroupName: "rg-{{user.alias}}-baseline"
+        resourceGroupName: "rg-{{user.alias}}-sandbox"
         deploymentName: "baseline-{{user.alias}}"
-        templateUrl: "https://raw.githubusercontent.com/pedemoorg/platform_configs/main/infra/bicep/baseline/main.bicep"
+        templateUrl: "https://raw.githubusercontent.com/PEDemoOrg/platform-configs/refs/heads/main/infra/baseline/biceo/onboard.bicep"
         parameters:
-          namePrefix: "rg-{{user.alias}}-baseline"
+          namePrefix: "rg-{{user.alias}}-sandbox"
           environment: "dev"
           tags:
             owner: "{{user.upn}}"
@@ -46,17 +50,10 @@ tasks:
     tool:
       name: "github.repo_wizard_mission_owner"
       args:
-        owner: "PEDemoOrg"
-        defaultBranch: "main"
-        visibility: "private"
-        newRepoName: "mission-{{user.alias}}-infra"
-        teamSlug: "developers"
-        # Optional hints (Supervisor can confirm/override):
-        templateOwner: "PEDemoOrg"
-        templateRepo: "ModernUIRepository"
-        labels:
-          - name: "owner:{{user.alias}}"
-            color: "0e8a16"
+        org: "PEDemoOrg"         # default org; wizard can override
+        defaultVisibility: "private"
+        suggestName: "mission-{{user.alias}}-infra"
+        teamSlug: "developers"           # optional team to grant push access
 
   - id: teams-channel
     kind: tool

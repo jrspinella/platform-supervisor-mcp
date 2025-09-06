@@ -15,6 +15,7 @@ const services: Record<string, string> = {
   azure: process.env.AZURE_MCP_URL || "http://127.0.0.1:8799",
   teams: process.env.TEAMS_MCP_URL || "http://127.0.0.1:8713",
   onboarding: process.env.ONBOARDING_MCP_URL || "http://127.0.0.1:8712",
+  governance: process.env.GOVERNANCE_MCP_URL || "http://127.0.0.1:8715",
 };
 
 // ---- helpers ----
@@ -28,11 +29,11 @@ async function postJsonRpc(baseUrl: string, method: string, params?: any) {
   const ct = r.headers.get("content-type") || "";
   const text = await r.text();
   if (!ct.includes("application/json")) {
-    throw new Error(`Upstream ${baseUrl} returned ${r.status} ${ct}: ${text.slice(0,200)}`);
+    throw new Error(`Upstream ${baseUrl} returned ${r.status} ${ct}: ${text.slice(0, 200)}`);
   }
   let json: any;
   try { json = JSON.parse(text); } catch (e) {
-    throw new Error(`Invalid JSON from ${baseUrl}: ${String(e)} body=${text.slice(0,200)}`);
+    throw new Error(`Invalid JSON from ${baseUrl}: ${String(e)} body=${text.slice(0, 200)}`);
   }
   return { status: r.status, json };
 }
@@ -55,6 +56,25 @@ async function fetchServiceTools(serviceName: string, baseUrl: string) {
       inputSchema: t.inputSchema,
     };
   });
+}
+
+async function callGovernanceValidate(service: string, toolLocalName: string, args: any) {
+  const govBase = services["governance"];
+  if (!govBase) return { allowed: true }; // fail-open if not configured
+  try {
+    const { json } = await postJsonRpc(govBase, "tools/call", {
+      name: "governance.validate_request",
+      arguments: { service, tool: toolLocalName, args }
+    });
+    const content = json?.result?.content ?? [];
+    const first = content.find((c: any) => c?.json) ?? {};
+    const verdict = first.json || {};
+    return { allowed: !!verdict.allowed, reason: verdict.reason, suggestions: verdict.suggestions };
+  } catch (e) {
+    // Choose fail-open or fail-closed. For dev, fail-open:
+    console.warn("[router] governance unavailable, proceeding (fail-open):", e);
+    return { allowed: true };
+  }
 }
 
 app.get("/healthz", (_req, res) => {
@@ -146,6 +166,22 @@ app.post("/a2a/tools/call", async (req, res) => {
         jsonrpc: "2.0", id,
         error: { code: -32601, message: `Unknown tool: ${name}` },
       });
+    }
+
+    // Governance enforcement (only for destructive domains)
+    if (["azure", "github", "teams"].includes(serviceName)) {
+      const verdict = await callGovernanceValidate(serviceName, toolNameRequested, args);
+      if (!verdict.allowed) {
+        return res.status(403).json({
+          jsonrpc: "2.0",
+          id,
+          error: {
+            code: -32003,
+            message: `GovernanceDenied: ${verdict.reason || "not allowed"}`,
+            data: { service: serviceName, tool: toolNameRequested, suggestions: verdict.suggestions || [] }
+          }
+        });
+      }
     }
 
     // Call upstream MCP via JSON-RPC /mcp with the *remote* tool name

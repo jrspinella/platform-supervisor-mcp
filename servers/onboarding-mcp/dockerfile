@@ -1,0 +1,17 @@
+# apps/router/Dockerfile  (same pattern for each service)
+FROM node:20-alpine AS build
+WORKDIR /app
+COPY package.json pnpm-lock.yaml ./
+RUN corepack enable && corepack prepare pnpm@latest --activate
+RUN pnpm fetch
+COPY . .
+RUN pnpm install --frozen-lockfile
+RUN pnpm -r -F router build
+
+FROM node:20-alpine
+ENV NODE_ENV=production
+WORKDIR /app
+COPY --from=build /app ./
+ENV PORT=8080
+EXPOSE 8080
+CMD ["node", "servers/onboarding-mcp/dist/index.js"]
