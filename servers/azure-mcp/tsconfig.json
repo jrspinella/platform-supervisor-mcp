@@ -1,4 +1,9 @@
 {
 "extends": "../../tsconfig.base.json",
-"include": ["src", "../../../packages/mcp-http/src"]
+"include": ["src", "../../../packages/mcp-http/src", "../../../packages/governance/src"],
+"compilerOptions": {
+    "paths": {
+        "packages/governance": ["../../packages/governance"]
+    }
+}
 }

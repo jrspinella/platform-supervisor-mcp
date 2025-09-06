@@ -3,6 +3,19 @@ import { z } from "zod";
 import { startMcpHttpServer } from "mcp-http";
 import { makeAzureClients } from "auth/src/azure.js";
 import { randomUUID } from "node:crypto";
+
+type Suggestion = {
+    title: string;
+    text: string;
+    autofix?: { arguments: any };
+};
+
+type EvalResult = {
+    decision: "deny" | "warn" | "allow";
+    reasons: string[];
+    policyIds: string[];
+    suggestions?: Suggestion[];
+};
 import { execFile as _execFile } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,14 +32,88 @@ function execFile(cmd: string, args: string[]): Promise<{ stdout: string; stderr
 }
 
 const PORT = Number(process.env.PORT ?? 8712);
+const GOV_URL = process.env.GOVERNANCE_MCP_URL || "http://127.0.0.1:8715";
 const TENANT_ID = process.env.AZURE_TENANT_ID!;
 const CLIENT_ID = process.env.AZURE_CLIENT_ID!;
 const CLIENT_SECRET = process.env.AZURE_CLIENT_SECRET!;
 const SUB_ID = process.env.AZURE_SUBSCRIPTION_ID!;
 let currentSub: string = SUB_ID;
 
-
 const { resources, storage, authorization, web, keyvault, containerservice } = makeAzureClients({ tenantId: TENANT_ID, clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, subscriptionId: SUB_ID });
+
+async function govCall(method: string, params: any) {
+    const r = await fetch(`${GOV_URL}/mcp`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: Date.now(), method, params }),
+    });
+    const text = await r.text();
+    let json: any;
+    try { json = JSON.parse(text); } catch {
+        throw new Error(`governance-mcp invalid JSON: ${text.slice(0, 200)}`);
+    }
+    if (json.error) throw new Error(`Governance RPC error: ${json.error.message || "unknown"}`);
+    return json.result;
+}
+
+// -------- helper used above --------
+function normalizeRgArgs(a: any): { name: string; location: string; tags?: Record<string, string> } {
+    const name = (a.name ?? a.resourceGroupName) as string;
+    const location = (a.location ?? a.region) as string;
+
+    let tags: Record<string, string> | undefined;
+    if (typeof a.tags === "string") {
+        const s = a.tags.trim();
+        if (s) {
+            const pairs = s.split(/[;,]\s*/).map((p: string) => p.trim()).filter(Boolean);
+            const entries: Array<[string, string]> = [];
+            for (const pair of pairs) {
+                const eq = pair.indexOf("=");
+                if (eq > 0) {
+                    const k = pair.slice(0, eq).trim();
+                    const v = pair.slice(eq + 1).trim();
+                    if (k && v) entries.push([k, v]);
+                }
+            }
+            tags = entries.length ? Object.fromEntries(entries) : { note: s };
+        }
+    } else if (a.tags && typeof a.tags === "object") {
+        tags = a.tags as Record<string, string>;
+    }
+
+    return { name, location, tags };
+}
+
+/** Ask governance if a tool call is allowed. Throws on deny (with reasons). */
+async function enforceGovernance(service: "azure", tool: string, args: any) {
+    // Tool name passed WITHOUT the "azure." prefix to keep policy keys clean
+    const res = await govCall("tools/call", {
+        name: "governance.evaluate",
+        arguments: { service, tool, args }
+    });
+    // expect: { content:[{type:"json", json:{ decision, reasons?, suggestions? }}] }
+    const first = res?.content?.find((c: any) => c.json)?.json || {};
+    const decision = first.decision || "allow";
+    if (decision === "deny") {
+        const reasons = first.reasons || [];
+        const suggestions = first.suggestions || [];
+        const msg = `GovernanceDenied: ${reasons.join(" | ")}`;
+        const e: any = new Error(msg);
+        e.reasons = reasons;
+        e.suggestions = suggestions;
+        throw e;
+    }
+    return first; // may contain { decision:"warn", reasons, suggestions }
+}
+
+/** Decorator for Azure handlers */
+function withGovernance<TArgs>(tool: string, handler: (args: TArgs) => Promise<any>, normalizeForGov?: (args: TArgs) => any) {
+    return async (args: TArgs) => {
+        const govArgs = normalizeForGov ? normalizeForGov(args) : args;
+        await enforceGovernance("azure", tool.replace(/^azure\./, ""), govArgs);
+        return handler(args);
+    };
+}
 
 async function loadArmTemplateFromUrl(url: string): Promise<any> {
     const res = await fetch(url);
@@ -84,70 +171,81 @@ const tools = [
         name: "azure.create_resource_group",
         description: "Create or update a resource group.",
         inputSchema: z.object({
-            // Accept synonyms and make them optional; we’ll canonicalize
             name: z.string().min(1).optional(),
             resourceGroupName: z.string().min(1).optional(),
             location: z.string().min(1).optional(),
             region: z.string().min(1).optional(),
-            // Accept either an object or a string like "Foo" or "key=val,team=plat"
+            // Accept object or "k=v,k2=v2"
             tags: z.union([z.record(z.string()), z.string()]).optional(),
-        }).strict().superRefine((v, ctx) => {
-            if (!v.name && !v.resourceGroupName) {
-                ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Provide 'name' (or 'resourceGroupName')." });
-            }
-            if (!v.location && !v.region) {
-                ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Provide 'location' (or 'region')." });
-            }
-        }),
-        handler: async (args: any) => {
-            const name = args.name || args.resourceGroupName;           // canonicalize
-            const location = args.location || args.region;
-
-            // Coerce tags
-            let tags: Record<string, string> | undefined;
-            if (typeof args.tags === "string") {
-                // Try to parse "k=v,k2=v2"; fall back to {"note": "<string>"}
-                const s = args.tags.trim();
-                if (s.includes("=")) {
-                    tags = Object.fromEntries(
-                        s.split(/[;,]\s*/).map((pair: string): [string, string] => {
-                            const [k, ...rest] = pair.split("=");
-                            return [k.trim(), rest.join("=").trim()];
-                        }).filter(([k, v]: [string, string]) => k && v)
-                    );
-                } else {
-                    tags = { note: s };
+        })
+            .strict()
+            .superRefine((v, ctx) => {
+                if (!v.name && !v.resourceGroupName) {
+                    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Provide 'name' (or 'resourceGroupName')." });
                 }
-            } else if (args.tags && typeof args.tags === "object") {
-                tags = args.tags;
-            }
+                if (!v.location && !v.region) {
+                    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Provide 'location' (or 'region')." });
+                }
+            }),
 
-            const rg = await resources.resourceGroups.createOrUpdate(name, { location, tags });
-            return { content: [{ type: "json" as const, json: rg }] };
-        }
+        // withGovernance(toolFq, handler, payloadForGovernance)
+        handler: withGovernance(
+            "azure.create_resource_group",
+
+            // ---- actual execution handler (receives raw, do not re-normalize elsewhere) ----
+            async (raw: any) => {
+                const { name, location, tags } = normalizeRgArgs(raw);
+
+                const payload = { location, tags }; // body for ARM
+                const rg = await resources.resourceGroups.createOrUpdate(name, payload);
+
+                return { content: [{ type: "json" as const, json: rg }] };
+            },
+
+            // ---- normalized payload supplied to governance preflight ----
+            (raw: any) => normalizeRgArgs(raw)
+        )
     },
     {
         name: "azure.create_storage_account",
         description: "Create a general purpose v2 Storage Account.",
         inputSchema: z.object({
             resourceGroupName: z.string(),
-            accountName: z.string(),
+            accountName: z.string().regex(/^[a-z0-9]{3,24}$/, "3–24 chars, lowercase letters & digits only"),
             location: z.string(),
-            sku: z.enum(["Standard_LRS", "Standard_GRS", "Standard_RAGRS", "Standard_ZRS", "Premium_LRS"]).default("Standard_LRS")
-        }),
-        handler: async (args: { resourceGroupName: string; accountName: string; location: string; sku: string }) => {
-            const poller = await storage.storageAccounts.beginCreateAndWait(
+            sku: z.enum(["Standard_LRS", "Standard_GRS", "Standard_RAGRS", "Standard_ZRS", "Premium_LRS"]).default("Standard_LRS"),
+            tags: z.record(z.string()).optional()
+        }).strict(),
+        // if you have withGovernance, keep it; otherwise use `handler: async (...) => { ... }`
+        handler: withGovernance("azure.create_storage_account", async (args: {
+            resourceGroupName: string;
+            accountName: string;
+            location: string;
+            sku: "Standard_LRS" | "Standard_GRS" | "Standard_RAGRS" | "Standard_ZRS" | "Premium_LRS";
+            tags?: Record<string, string>;
+        }) => {
+            const params = {
+                location: args.location,
+                sku: { name: args.sku },
+                kind: "StorageV2",
+                tags: args.tags,
+                properties: {
+                    enableHttpsTrafficOnly: true,     // HTTPS only
+                    allowBlobPublicAccess: false,     // safer default; allow only if you need it
+                    minimumTlsVersion: "TLS1_2",
+                    publicNetworkAccess: "Enabled"
+                }
+            } as any;
+
+            // Returns the created StorageAccount (not a poller)
+            const account = await storage.storageAccounts.beginCreateAndWait(
                 args.resourceGroupName,
                 args.accountName,
-                {
-                    location: args.location,
-                    sku: { name: args.sku as any },
-                    kind: "StorageV2",
-                    enableHttpsTrafficOnly: true
-                }
+                params
             );
-            return { content: [{ type: "json" as const, json: poller }] };
-        }
+
+            return { content: [{ type: "json" as const, json: account }] };
+        })
     },
     {
         name: "azure.deploy_template_rg",
@@ -224,7 +322,7 @@ const tools = [
             capacity: z.number().int().positive().default(1),
             zoneRedundant: z.boolean().default(false)
         }),
-        handler: async (args: { resourceGroupName: string; name: string; location: string; skuName: string; capacity: number; zoneRedundant: boolean }) => {
+        handler: withGovernance("azure.create_app_service_plan", async (args: { resourceGroupName: string; name: string; location: string; skuName: string; capacity: number; zoneRedundant: boolean }) => {
             const plan = await web.appServicePlans.beginCreateOrUpdateAndWait(args.resourceGroupName, args.name, {
                 location: args.location,
                 kind: "linux",
@@ -233,7 +331,7 @@ const tools = [
                 sku: { name: args.skuName, capacity: args.capacity } as any
             });
             return { content: [{ type: "json" as const, json: plan }] };
-        }
+        })
     },
     {
         name: "azure.create_web_app",
@@ -248,7 +346,7 @@ const tools = [
             runtimeStack: z.string().regex(/^[A-Z0-9]+\|[A-Za-z0-9.-]+$/, "Use format like NODE|20-lts"),
             appSettings: z.record(z.string()).optional()
         }),
-        handler: async ({ resourceGroupName, name, location, planResourceId, planName, runtimeStack, appSettings }: {
+        handler: withGovernance("azure.create_web_app", async ({ resourceGroupName, name, location, planResourceId, planName, runtimeStack, appSettings }: {
             resourceGroupName: string;
             name: string;
             location: string;
@@ -278,30 +376,66 @@ const tools = [
                 }
             } as any);
             return { content: [{ type: "json" as const, json: site }] };
-        }
+        })
     },
     {
         name: "azure.create_key_vault",
         description: "Create a Key Vault (RBAC by default).",
         inputSchema: z.object({
             resourceGroupName: z.string(),
-            name: z.string(),
+            name: z.string().regex(/^[a-z0-9-]{3,24}$/, "3–24 chars, lowercase letters/digits/hyphens"),
             location: z.string(),
-            tenantId: z.string(),
+            tenantId: z.string(), // use z.string().uuid() if you want strict GUIDs
             skuName: z.enum(["standard", "premium"]).default("standard"),
-            enableRbacAuthorization: z.boolean().default(true)
-        }),
-        handler: async (args: { resourceGroupName: string; name: string; location: string; tenantId: string; skuName: "standard" | "premium"; enableRbacAuthorization: boolean }) => {
-            const vault = await keyvault.vaults.beginCreateOrUpdateAndWait(args.resourceGroupName, args.name, {
-                location: args.location,
-                properties: {
-                    tenantId: args.tenantId,
-                    enableRbacAuthorization: args.enableRbacAuthorization
-                },
-                sku: { name: args.skuName as any, family: "A" }
-            } as any);
-            return { content: [{ type: "json" as const, json: vault }] };
-        }
+            enableRbacAuthorization: z.boolean().default(true),
+            publicNetworkAccess: z.enum(["Enabled", "Disabled"]).default("Enabled"),
+            tags: z.record(z.string()).optional()
+        }).strict(),
+        handler: withGovernance("azure.create_key_vault", async (args: {
+            resourceGroupName: string;
+            name: string;
+            location: string;
+            tenantId: string;
+            skuName?: "standard" | "premium";
+            enableRbacAuthorization?: boolean;
+            publicNetworkAccess?: "Enabled" | "Disabled";
+            tags?: Record<string, string>;
+        }) => {
+            try {
+                const skuName = (args.skuName || "standard").toLowerCase() as "standard" | "premium";
+                const parameters = {
+                    location: args.location,
+                    tags: args.tags,
+                    properties: {
+                        tenantId: args.tenantId,
+                        enableRbacAuthorization: args.enableRbacAuthorization,
+                        publicNetworkAccess: args.publicNetworkAccess,
+                        sku: { name: skuName, family: "A" }
+                    }
+                } as any;
+
+                const vault = await keyvault.vaults.beginCreateOrUpdateAndWait(
+                    args.resourceGroupName,
+                    args.name,
+                    parameters
+                );
+                return { content: [{ type: "json" as const, json: vault }] };
+            } catch (e: any) {
+                return {
+                    content: [{
+                        type: "json" as const,
+                        json: {
+                            error: {
+                                message: e?.message,
+                                code: e?.code || e?.statusCode,
+                                body: e?.response?.body || e?.response?.parsedBody || e?.details
+                            }
+                        }
+                    }],
+                    isError: true
+                };
+            }
+        })
     },
     {
         name: "azure.create_aks_cluster",
@@ -416,6 +550,33 @@ const tools = [
                 { properties: args.settings }
             );
             return { content: [{ type: "json" as const, json: res }] };
+        }
+    },
+    {
+        name: "azure.get_resource_group",
+        description: "Get a resource group by name.",
+        inputSchema: z.object({ name: z.string() }).strict(),
+        handler: async ({ name }: { name: string }) => {
+            const rg = await resources.resourceGroups.get(name);
+            return { content: [{ type: "json" as const, json: rg }] };
+        }
+    },
+    {
+        name: "azure.get_key_vault",
+        description: "Get a Key Vault by resource group and name.",
+        inputSchema: z.object({ resourceGroupName: z.string(), name: z.string() }).strict(),
+        handler: async ({ resourceGroupName, name }: { resourceGroupName: string; name: string }) => {
+            const v = await keyvault.vaults.get(resourceGroupName, name);
+            return { content: [{ type: "json" as const, json: v }] };
+        }
+    },
+    {
+        name: "azure.get_web_app",
+        description: "Get an App Service (Web App) by resource group and name.",
+        inputSchema: z.object({ resourceGroupName: z.string(), name: z.string() }).strict(),
+        handler: async ({ resourceGroupName, name }: { resourceGroupName: string; name: string }) => {
+            const app = await web.webApps.get(resourceGroupName, name);
+            return { content: [{ type: "json" as const, json: app }] };
         }
     },
 ];

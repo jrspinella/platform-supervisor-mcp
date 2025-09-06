@@ -1,0 +1,94 @@
+ato:
+  # COMMON FOUNDATIONAL CONTROLS ACROSS MANY TOOLS
+  common:
+    # Logs centralization, key management, SAST, branch protection, etc.
+    policies:
+      - id: "AU-2.central-logging"
+        target: { tool: "azure.create_web_app" }
+        effect: warn
+        checks:
+          - exists: { }       # placeholder – your tool payload must carry this flag if diag is configured
+        suggest:
+          - "Enable Diagnostic Settings to Log Analytics workspace (AU-2/AU-6)."
+        controls: ["AU-2", "AU-6"]
+
+      - id: "SC-13.tls12"
+        target: { tool: "azure.create_web_app" }
+        effect: warn
+        checks:
+          - booleanTrue: { path: "httpsOnly", message: "HTTPS-only should be enabled" }
+        suggest:
+          - "Enforce HTTPS-only and TLS >= 1.2 for App Service (SC-8/SC-13)."
+        controls: ["SC-8", "SC-13"]
+
+      - id: "CM-2.iac-in-git"
+        target: { tool: "github.create_repo" }
+        effect: warn
+        checks:
+          - equals: { path: "private", value: true, message: "Repos should be private" }
+        suggest:
+          - "Keep IaC in Git, private repos, and use CODEOWNERS + branch protection (CM-2/CM-3)."
+        controls: ["CM-2", "CM-3"]
+
+      - id: "SA-11.static-analysis"
+        target: { tool: "github.create_repo" }
+        effect: warn
+        checks:
+          - exists: { path: "labels.securityScanning" }  # e.g. you pass flags to indicate scanning setup
+        suggest:
+          - "Enable Dependabot/SAST/SCA in CI; generate SBOM (SA-11/SI-2)."
+        controls: ["SA-11", "SI-2"]
+
+  # APP SERVICE SPECIFIC
+  app_service:
+    policies:
+      - id: "SC-28.secrets-in-kv"
+        target: { tool: "azure.web_set_app_settings" }
+        effect: warn
+        checks:
+          - regex: { path: "settings.*", pattern: "@Microsoft.KeyVault\\(", message: "Use Key Vault references for secrets" }
+        suggest:
+          - "Move secrets to Key Vault and reference via @Microsoft.KeyVault(...) (SC-12/SC-28)."
+        controls: ["SC-12", "SC-28"]
+
+      - id: "AU-12.diagnostics"
+        target: { tool: "azure.create_web_app" }
+        effect: warn
+        checks:
+          - equals: { path: "diagnostics.toLogAnalytics", value: true, message: "Send diagnostics to Log Analytics" }
+        suggest:
+          - "Configure Diagnostic Settings to LAW, enable HTTP logs, metrics, and audit events."
+        controls: ["AU-12", "AU-6"]
+
+  # NETWORK / PRIVATE ACCESS
+  private_access:
+    policies:
+      - id: "SC-7.private-endpoints"
+        target: { tool: "azure.create_key_vault" }
+        effect: warn
+        checks:
+          - equals: { path: "publicNetworkAccess", value: "Enabled" }  # warn to migrate to private endpoints later
+        suggest:
+          - "Plan Private Endpoints + firewall allow-listing for Key Vault (SC-7)."
+        controls: ["SC-7"]
+
+  # AKS (Kubernetes)
+  aks:
+    policies:
+      - id: "SC-7.aks-private-cluster"
+        target: { tool: "azure.create_aks_cluster" }
+        effect: warn
+        checks:
+          - equals: { path: "apiServerAccessProfile.enablePrivateCluster", value: true, message: "AKS should be Private Cluster" }
+        suggest:
+          - "Use private cluster and authorized IPs; integrate with Azure Policy add-on."
+        controls: ["SC-7"]
+
+      - id: "AU-2.aks-logging"
+        target: { tool: "azure.create_aks_cluster" }
+        effect: warn
+        checks:
+          - equals: { path: "omsAgent.enabled", value: true, message: "Enable Container Insights/OMS" }
+        suggest:
+          - "Enable Container Insights; ship audit logs to LAW (AU-2/AU-6)."
+        controls: ["AU-2", "AU-6"]

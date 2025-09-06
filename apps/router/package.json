@@ -11,11 +11,13 @@
     "dependencies": {
         "dotenv": "^16.4.5",
         "express": "^4.19.2",
-        "governance": "workspace:*",
+        "governance-mcp": "workspace:*",
+        "js-yaml": "^4.1.0",
         "node-fetch": "^3.3.2",
         "zod-to-json-schema": "^3.23.5"
     },
     "devDependencies": {
-        "@types/express": "^5.0.3"
+        "@types/express": "^5.0.3",
+        "@types/js-yaml": "^4.0.9"
     }
 }
