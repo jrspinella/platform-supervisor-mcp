@@ -1,94 +1,111 @@
+# governance/ato.yaml
+# Advisory (warn) rules used by platform.scan_workloads / platform.scan_networks.
+
 ato:
-  # COMMON FOUNDATIONAL CONTROLS ACROSS MANY TOOLS
-  common:
-    # Logs centralization, key management, SAST, branch protection, etc.
+  workload:
     policies:
-      - id: "AU-2.central-logging"
-        target: { tool: "azure.create_web_app" }
+      - id: "SC-8.SC-13.webapp-https-only"
+        description: "HTTPS-only must be enabled on App Service"
+        target: { tool: "ato.workload.web_app" }
         effect: warn
         checks:
-          - exists: { }       # placeholder – your tool payload must carry this flag if diag is configured
+          - { type: "requiredTrue", path: "properties.httpsOnly", message: "Enable HTTPS-only" }
         suggest:
-          - "Enable Diagnostic Settings to Log Analytics workspace (AU-2/AU-6)."
-        controls: ["AU-2", "AU-6"]
+          - title: "Enforce HTTPS-only"
+            text: "Set httpsOnly=true and minimum TLS ≥ 1.2 (NIST 800-53 SC-8/SC-13)."
 
-      - id: "SC-13.tls12"
-        target: { tool: "azure.create_web_app" }
+      - id: "SC-13.webapp-min-tls"
+        description: "Minimum TLS version should be 1.2+"
+        target: { tool: "ato.workload.web_app" }
         effect: warn
         checks:
-          - booleanTrue: { path: "httpsOnly", message: "HTTPS-only should be enabled" }
+          - { type: "equals", path: "properties.siteConfig.minimumTlsVersion", value: "1.2", message: "Set min TLS to 1.2+" }
         suggest:
-          - "Enforce HTTPS-only and TLS >= 1.2 for App Service (SC-8/SC-13)."
-        controls: ["SC-8", "SC-13"]
+          - title: "TLS 1.2+"
+            text: "Configure minimumTlsVersion=1.2 in siteConfig (SC-13)."
 
-      - id: "CM-2.iac-in-git"
-        target: { tool: "github.create_repo" }
+      - id: "AU-2.AU-6.webapp-diagnostics-law"
+        description: "Send diagnostics to Log Analytics"
+        target: { tool: "ato.workload.web_app" }
         effect: warn
         checks:
-          - equals: { path: "private", value: true, message: "Repos should be private" }
+          - { type: "requiredPresent", path: "diagnosticWorkspaceResourceId", message: "Diagnostic settings to LAW missing" }
         suggest:
-          - "Keep IaC in Git, private repos, and use CODEOWNERS + branch protection (CM-2/CM-3)."
-        controls: ["CM-2", "CM-3"]
+          - title: "Centralized Logging"
+            text: "Enable Diagnostic Settings to LAW; include HTTP logs, metrics, and audit (AU-2/AU-6)."
 
-      - id: "SA-11.static-analysis"
-        target: { tool: "github.create_repo" }
+      - id: "IA-2.webapp-identity"
+        description: "Prefer system-assigned identity"
+        target: { tool: "ato.workload.web_app" }
         effect: warn
         checks:
-          - exists: { path: "labels.securityScanning" }  # e.g. you pass flags to indicate scanning setup
+          - { type: "requiredTrue", path: "identity.systemAssigned", message: "Enable system-assigned identity" }
         suggest:
-          - "Enable Dependabot/SAST/SCA in CI; generate SBOM (SA-11/SI-2)."
-        controls: ["SA-11", "SI-2"]
+          - title: "Managed Identity"
+            text: "Enable system-assigned managed identity and use it for Key Vault/Storage access (IA-2)."
 
-  # APP SERVICE SPECIFIC
-  app_service:
+  network:
     policies:
-      - id: "SC-28.secrets-in-kv"
-        target: { tool: "azure.web_set_app_settings" }
+      - id: "SC-5.vnet-ddos-plan"
+        description: "Attach a DDoS plan to VNets hosting internet-facing workloads"
+        target: { tool: "ato.network.vnet" }
         effect: warn
         checks:
-          - regex: { path: "settings.*", pattern: "@Microsoft.KeyVault\\(", message: "Use Key Vault references for secrets" }
+          - { type: "requiredPresent", path: "ddosProtectionPlan.id", message: "Consider DDoS Protection Plan" }
         suggest:
-          - "Move secrets to Key Vault and reference via @Microsoft.KeyVault(...) (SC-12/SC-28)."
-        controls: ["SC-12", "SC-28"]
+          - title: "DDoS Protection Plan"
+            text: "Enable Standard DDoS plan on critical VNets (SC-5)."
 
-      - id: "AU-12.diagnostics"
-        target: { tool: "azure.create_web_app" }
+      - id: "SC-7.subnet-nsg-required"
+        description: "Subnets should have an NSG"
+        target: { tool: "ato.network.subnet" }
         effect: warn
         checks:
-          - equals: { path: "diagnostics.toLogAnalytics", value: true, message: "Send diagnostics to Log Analytics" }
+          - { type: "requiredPresent", path: "networkSecurityGroup.id", message: "Attach NSG to subnet" }
         suggest:
-          - "Configure Diagnostic Settings to LAW, enable HTTP logs, metrics, and audit events."
-        controls: ["AU-12", "AU-6"]
+          - title: "NSG on Subnets"
+            text: "Ensure each subnet has an NSG with least-privilege rules (SC-7)."
 
-  # NETWORK / PRIVATE ACCESS
-  private_access:
+      - id: "SC-7.subnet-private-endpoints"
+        description: "PE subnets should disable network policies"
+        target: { tool: "ato.network.subnet" }
+        effect: warn
+        checks:
+          - { type: "equals", path: "privateEndpointNetworkPolicies", value: "Disabled", message: "Disable policies for PE subnets" }
+        suggest:
+          - title: "Private Endpoints"
+            text: "For Private Endpoint subnets, set privateEndpointNetworkPolicies=Disabled (SC-7)."
+
+      - id: "SC-7.nsg-general-advisory"
+        description: "Review inbound NSG rules (22/3389/public)"
+        target: { tool: "ato.network.nsg" }
+        effect: warn
+        checks:
+          # Always attach suggestion; harmless gentle advisory
+          - { type: "requiredPresent", path: "id" }
+        suggest:
+          - title: "Audit NSG Ingress"
+            text: "Check for 0.0.0.0/0 to 22/3389 and restrict by source ranges; prefer JIT or Private Access (SC-7)."
+
+      - id: "SC-7.public-ip-standard"
+        description: "Use Standard SKU Public IPs"
+        target: { tool: "ato.network.public_ip" }
+        effect: warn
+        checks:
+          - { type: "notEquals", path: "sku.name", value: "Basic", message: "Avoid Basic SKU public IPs" }
+        suggest:
+          - title: "Public IP SKU"
+            text: "Use Standard SKU public IPs for zone-redundancy and better security defaults (SC-7)."
+
+  key_vault:
     policies:
-      - id: "SC-7.private-endpoints"
-        target: { tool: "azure.create_key_vault" }
+      - id: "SC-7.kv-private-endpoints"
+        description: "KV should prefer private endpoints + RBAC"
+        target: { tool: "ato.workload.key_vault" }
         effect: warn
         checks:
-          - equals: { path: "publicNetworkAccess", value: "Enabled" }  # warn to migrate to private endpoints later
+          - { type: "equals", path: "properties.enableRbacAuthorization", value: true, message: "Prefer RBAC authorization" }
+          - { type: "notEquals", path: "properties.publicNetworkAccess", value: "Enabled", message: "Consider Private Endpoint + firewall" }
         suggest:
-          - "Plan Private Endpoints + firewall allow-listing for Key Vault (SC-7)."
-        controls: ["SC-7"]
-
-  # AKS (Kubernetes)
-  aks:
-    policies:
-      - id: "SC-7.aks-private-cluster"
-        target: { tool: "azure.create_aks_cluster" }
-        effect: warn
-        checks:
-          - equals: { path: "apiServerAccessProfile.enablePrivateCluster", value: true, message: "AKS should be Private Cluster" }
-        suggest:
-          - "Use private cluster and authorized IPs; integrate with Azure Policy add-on."
-        controls: ["SC-7"]
-
-      - id: "AU-2.aks-logging"
-        target: { tool: "azure.create_aks_cluster" }
-        effect: warn
-        checks:
-          - equals: { path: "omsAgent.enabled", value: true, message: "Enable Container Insights/OMS" }
-        suggest:
-          - "Enable Container Insights; ship audit logs to LAW (AU-2/AU-6)."
-        controls: ["AU-2", "AU-6"]
+          - title: "KV Access Model"
+            text: "Enable RBAC and move to Private Endpoints with firewall allow-listing (SC-7)."

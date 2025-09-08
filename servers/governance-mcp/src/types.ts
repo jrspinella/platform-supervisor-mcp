@@ -1,4 +1,4 @@
-// governance/src/types.ts
+// servers/governance-mcp/src/types.ts
 
 export type Check =
   | { type: "regex"; path: string; pattern: string; message?: string }
@@ -21,7 +21,8 @@ export type Policy = {
   target: { tool?: string; prefix?: string };
   effect: "deny" | "warn" | "allow";
   checks: Check[];
-  suggest?: string | { title?: string; text: string };
+  // allow single or multiple suggestions
+  suggest?: string | Suggestion | Suggestion[];
 };
 
 export type EvalResult = {

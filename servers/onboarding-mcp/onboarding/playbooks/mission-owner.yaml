@@ -2,71 +2,71 @@ id: mission-owner
 name: Mission Owner – Day 0/1
 audience: mission-owner
 summary: >
-  You are about to run the onboarding agent. This agent helps you create a sandbox resource group, deploys baseline infra from a curated Bicep template,
-  provisions a mission GitHub repo from a template with protections, sets up your Teams channel,
-  and points you to a couple of manual follow-ups.
+  Creates a sandbox resource group, deploys an App Service skeleton,
+  provisions a GitHub repo from a template with protections, and sets tags.
 
 tasks:
-  - id: welcome
-    kind: info
-    title: "Welcome {{user.displayName}} — let’s set up your mission workspace."
-
-  - id: baseline-rg
+  - id: rg
     kind: tool
-    title: "Create baseline RG"
-    description: "Create rg-{{user.alias}}-sandbox in usgovvirginia (tagged)."
+    title: "Create sandbox RG rg-{{user.alias}}-sbx in {{region}}"
     tool:
       name: "azure.create_resource_group"
       args:
-        name: "rg-{{user.alias}}-sandbox"
-        location: "usgovvirginia"
+        name: "rg-{{user.alias}}-sbx"
+        location: "{{region}}"
         tags:
           owner: "{{user.upn}}"
           env: "dev"
-          costCenter: "0000"
 
-  - id: deploy-baseline
+  - id: plan
     kind: tool
-    title: "Deploy baseline infra (Bicep URL)"
-    description: "Deploy networking/monitoring from a curated template."
+    title: "Create App Service Plan plan-{{user.alias}}-sbx (P1v3) in {{region}}"
     tool:
-      name: "azure.deploy_bicep_rg_from_url"
+      name: "azure.create_app_service_plan"
       args:
-        resourceGroupName: "rg-{{user.alias}}-sandbox"
-        deploymentName: "baseline-{{user.alias}}"
-        templateUrl: "https://raw.githubusercontent.com/PEDemoOrg/platform-configs/refs/heads/main/infra/baseline/biceo/onboard.bicep"
-        parameters:
-          namePrefix: "rg-{{user.alias}}-sandbox"
-          environment: "dev"
-          tags:
-            owner: "{{user.upn}}"
-            env: "dev"
-            costCenter: "0000"
+        resourceGroupName: "rg-{{user.alias}}-sbx"
+        name: "plan-{{user.alias}}-sbx"
+        location: "{{region}}"
+        skuName: "P1v3"
 
-  - id: mission-repo
+  - id: web
     kind: tool
-    title: "Create mission repo (with Q&A)"
-    description: "We’ll ask a couple questions (template, name, privacy) and then create the repo."
+    title: "Create Web App web-{{user.alias}} (NODE|20-lts)"
     tool:
-      name: "github.repo_wizard_mission_owner"
+      name: "azure.create_web_app"
       args:
-        org: "PEDemoOrg"         # default org; wizard can override
-        defaultVisibility: "private"
-        suggestName: "mission-{{user.alias}}-infra"
-        teamSlug: "developers"           # optional team to grant push access
+        resourceGroupName: "rg-{{user.alias}}-sbx"
+        name: "web-{{user.alias}}"
+        planName: "plan-{{user.alias}}-sbx"
+        location: "{{region}}"
+        runtimeStack: "NODE|20-lts"
 
-  - id: teams-channel
+  - id: repo
     kind: tool
-    title: "Create Teams channel"
-    description: "Creates #mission-{{user.alias}} in your governance team."
+    title: "Provision GitHub repo {{user.alias}}-hello-web from template"
     tool:
-      name: "teams.create_channel"
+      name: "github.create_repo_from_template"
       args:
-        teamId: "<governance-team-id>"
-        displayName: "mission-{{user.alias}}"
-        description: "Mission comms"
+        owner: "your-org"
+        templateOwner: "your-org"
+        templateRepo: "webapp-template"
+        name: "{{user.alias}}-hello-web"
+        private: true
+        description: "Mission app for {{user.alias}}"
 
-  - id: join-announce
-    kind: manual
-    title: "Join #eng-announcements and #platform"
-    description: "Ask your buddy to add you if needed."
+  - id: settings
+    kind: tool
+    title: "Apply app settings to web-{{user.alias}}"
+    tool:
+      name: "azure.web_set_app_settings"
+      args:
+        resourceGroupName: "rg-{{user.alias}}-sbx"
+        name: "web-{{user.alias}}"
+        settings:
+          ENV: "dev"
+          OWNER: "{{user.upn}}"
+
+  - id: info-closeout
+    kind: info
+    title: "Review next steps in Teams channel"
+    description: "Follow the checklist posted to the team channel and open a PR in the new repo."

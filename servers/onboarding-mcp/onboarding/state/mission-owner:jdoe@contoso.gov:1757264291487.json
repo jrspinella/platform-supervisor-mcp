@@ -1,0 +1,68 @@
+{
+  "runId": "mission-owner:jdoe@contoso.gov:1757264291487",
+  "playbookId": "mission-owner",
+  "playbookName": "Mission Owner – Day 0/1",
+  "user": {
+    "upn": "jdoe@contoso.gov",
+    "alias": "jdoe"
+  },
+  "region": "usgovvirginia",
+  "tasks": [
+    {
+      "id": "intro",
+      "kind": "info",
+      "title": "Welcome, jdoe!",
+      "description": "We'll set up your sandbox and repository in usgovvirginia.",
+      "status": "pending"
+    },
+    {
+      "id": "rg",
+      "kind": "tool",
+      "title": "Create sandbox RG for jdoe",
+      "tool": {
+        "name": "azure.create_resource_group",
+        "args": {
+          "name": "rg-jdoe-sbx",
+          "location": "usgovvirginia",
+          "tags": {
+            "owner": "{{user.upn}}",
+            "env": "dev"
+          }
+        }
+      },
+      "status": "pending"
+    },
+    {
+      "id": "repo",
+      "kind": "tool",
+      "title": "Provision repo from template",
+      "tool": {
+        "name": "github.create_repo_from_template",
+        "args": {
+          "templateOwner": "navy-platform",
+          "templateRepo": "mission-template",
+          "owner": "navy-platform",
+          "newRepoName": "jdoe-mission",
+          "description": "Mission repo for jdoe",
+          "visibility": "private"
+        }
+      },
+      "status": "pending"
+    },
+    {
+      "id": "law",
+      "kind": "tool",
+      "title": "Create Log Analytics Workspace",
+      "tool": {
+        "name": "azure.create_log_analytics_workspace",
+        "args": {
+          "resourceGroupName": "rg-jdoe-sbx",
+          "name": "law-jdoe",
+          "location": "usgovvirginia"
+        }
+      },
+      "status": "pending"
+    }
+  ],
+  "summary": "Creates a sandbox resource group, baseline infra, a protected GitHub repo, and a few follow-ups.\n"
+}

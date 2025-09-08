@@ -1,138 +1,132 @@
+# governance/policy.yaml
+# Hard gates & light hints for Azure + GitHub.
+# Each service MCP calls governance.evaluate("<service>.<tool>", args) BEFORE executing.
+
 azure:
-  # =========================
-  # Resource Groups
-  # =========================
+  # ---------- Resource Groups ----------
   create_resource_group:
-    deny_names: [cookies, foo, bar]
+    # Disallow specific names
+    deny_names:
+      - cookies
+      - foo
+      - bar
+    # Enforce rg- prefix & kebab-case (3–40 after the prefix)
     name_regex: "^(rg-[a-z0-9-]{3,40})$"
+    # Allowed regions (tighten as needed)
     allowed_regions: [usgovvirginia, usgovarizona]
+    # Required tags
     require_tags: [owner, env]
-    suggest_name: "rg-{{alias}}-sandbox"
+    # Human-helpful suggestions (rendered with context if provided)
+    suggest_name: "rg-{{alias}}-sbx"
     suggest_tags:
       owner: "{{upn}}"
       env: "dev"
     suggest_region: "usgovvirginia"
 
-  # =========================
-  # App Service Plan
-  # =========================
+  # ---------- App Service Plan ----------
   create_app_service_plan:
-    sku_allowlist: [P1v3, P2v3]
+    # Constrain SKUs
+    sku_allowlist: [P1, P2]
 
-  # =========================
-  # Web App (App Service)
-  # =========================
+  # ---------- Web App ----------
   create_web_app:
+    # Constrain stacks you support
     runtime_allowlist:
       - "NODE|20-lts"
       - "DOTNET|8.0"
 
-  # =========================
-  # Static Web App (SWA)
-  # =========================
+  # ---------- Static Web App (optional) ----------
   create_static_web_app:
-    name_regex: "^[a-z0-9-]{2,60}$"
-    allowed_regions: [usgovvirginia, usgovarizona]
     sku_allowlist: [Free, Standard, StandardPlus]
-    suggest_name: "swa-{{alias}}"
-    suggest_region: "usgovvirginia"
 
-  # Link an SWA to a GitHub repo/branch (CI/CD)
-  link_static_webapp_repo:
-    repo_regex: "^[a-z0-9_.-]+$"
-    branch_regex: "^(main|release/.+)$"
-    app_location_regex: "^(/|/app|/src|/web)$"
-    output_location_regex: "^(/dist|/build|/out)$"
+  create_key_vault:
+    sku_allowlist: [standard, premium]
+    require_rbac_true: true
+    disallow_public_network_access_enabled: true
 
-  # =========================
-  # Virtual Network
-  # =========================
+  create_storage_account:
+    name_regex: "^[a-z0-9]{3,24}$"
+    sku_allowlist: [Standard_LRS, Standard_GRS, Standard_RAGRS, Standard_ZRS, Premium_LRS]
+    kind_allowlist: [StorageV2, BlobStorage, BlockBlobStorage, FileStorage, Storage]
+    require_https_only_true: true
+
   create_virtual_network:
-    name_regex: "^[a-zA-Z0-9_-]{2,64}$"
+    name_regex: "^(vnet-[a-z0-9-]{3,40})$"
     allowed_regions: [usgovvirginia, usgovarizona]
-    # engine can check addressPrefixes[0] via path "addressPrefixes.0"
-    vnet_first_prefix_regex: '^10\.(?:[0-9]|[1-9][0-9])\.0\.0/16$'
+    require_tags: [owner, env]
+    require_ddos_plan: true   # warn
 
-  # =========================
-  # Subnet
-  # =========================
   create_subnet:
-    name_regex: "^[a-zA-Z0-9_-]{1,80}$"
-    address_prefix_regex: '^10\.(?:[0-9]|[1-9][0-9])\.(?:[0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.0/24$'
-    privateEndpointNetworkPolicies_allowlist: ["Enabled", "Disabled"]
+    name_regex: "^(snet-[a-z0-9-]{3,40})$"
+    require_nsg: true
+    require_private_endpoint_policies_disabled: true
 
-  # =========================
-  # Private Endpoint
-  # =========================
   create_private_endpoint:
-    name_regex: "^[a-zA-Z0-9_-]{2,80}$"
-    allowed_regions: [usgovvirginia, usgovarizona]
-    target_resource_id_regex: '^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/(Microsoft\.KeyVault|Microsoft\.Storage|Microsoft\.Web)/'
-    group_ids_allowlist: ["vault", "blob", "web"]
+    require_dns_zone_link: true
+    # optional hint: match target resource types
+    target_regexes:
+      - "providers/Microsoft.KeyVault/vaults"
+      - "providers/Microsoft.Storage/storageAccounts"
+      - "providers/Microsoft.Web/sites"
 
-  # =========================
-  # AKS (Managed Kubernetes)
-  # =========================
-  # Map fields to your tool args, e.g.:
-  #   name -> args.name
-  #   location -> args.location
-  #   kubernetesVersion -> args.kubernetesVersion
-  #   agentPool.vmSize -> args.agentPool.vmSize
-  #   agentPool.enableAutoScaling -> args.agentPool.enableAutoScaling
-  #   networkPlugin -> args.networkPlugin
-  #   apiServerAccessProfile.enablePrivateCluster -> args.apiServerAccessProfile.enablePrivateCluster
-  create_aks_cluster:
-    name_regex: "^(aks-[a-z0-9-]{3,40})$"
+  create_log_analytics_workspace:
     allowed_regions: [usgovvirginia, usgovarizona]
-    kubernetes_version_regex: "^1\\.(27|28|29)(\\.\\d+)?$"
-    agentpool_vmSize_allowlist:
-      - "Standard_D4s_v5"
-      - "Standard_D8s_v5"
-    agentpool_enableAutoScaling_allowlist: ["true"]
-    # If you expose node count (number), prefer validating via your tool; or stringify and match:
-    agentpool_count_regex: "^(3|4|5|6|7|8)$"
-    networkPlugin_allowlist: ["azure"]
-    networkPolicy_allowlist: ["azure"]
-    outboundType_allowlist: ["loadBalancer", "userDefinedRouting"]
-    apiServer_privateCluster_allowlist: ["true"]
+    retention_days_allowlist: [30, 60, 90, 180, 365, 730]
+
+  create_public_ip:
+    sku_allowlist: ["Standard"]
+    allocation_allowlist: ["Static"]
+    version_allowlist: ["IPv4"]
+
 
 github:
-  # =========================
-  # Create repository (org)
-  # =========================
+  # ---------- Create repo ----------
   create_repo:
-    name_regex: "^[a-z0-9-]{3,100}$"
-    org_allowlist: ["pedemoorg", "your-org"]
-    private_allowlist: ["true"]        # allowedValues on path "private"
-    default_branch_allowlist: ["main"] # if you pass default_branch in args
-    suggest_name: "mission-{{alias}}-infra"
+    deny_names: [foo, bar, test, temp]
+    name_regex: "^[a-z0-9-]{2,100}$"
+    visibility_allowlist: [private, internal]
+    suggest_name: "{{alias}}-{{project}}"
+    suggest_visibility: "private"
+    suggest_description: "Mission repo for {{alias}}"
 
-  # =========================
-  # Create repo from template
-  # =========================
+  # ---------- Create repo from template ----------
   create_repo_from_template:
-    name_regex: "^[a-z0-9-]{3,100}$"
-    template_owner_allowlist: ["pedemoorg", "your-org"]
-    private_allowlist: ["true"]
+    deny_names: [foo, bar, test, temp]
+    new_name_regex: "^[a-z0-9-]{2,100}$"
+    visibility_allowlist: [private, internal]
+    suggest_visibility: "private"
 
-  # =========================
-  # Team permission on repo
-  # =========================
-  assign_team_permission:
-    permission_allowlist: ["push", "maintain"]
+  # ---------- Branch protection baseline ----------
+  protect_branch:
+    enforce_admins_required: true
+    code_owner_reviews_required: true
+    min_approvals_not_zero: true
+    block_force_pushes: true
+    suggest:
+      - title: "Branch Protection Baseline"
+        text: "Require ≥1 approval, CODEOWNERS reviews, block force-pushes, enforce for admins."
 
-  # =========================
-  # Branch protection
-  # =========================
-  protect_default_branch:
-    branch_allowlist: ["main"]
-    require_pr_reviews_allowlist: ["true"]
-    approvals_allowlist: ["1", "2"]
-    enforce_admins_allowlist: ["true"]
+  # ---------- Repo security toggles ----------
+  enable_repo_security:
+    require_secret_scanning: true
+    require_push_protection: true
+    require_dependabot_security_updates: true
+    suggest:
+      - title: "Security Baseline"
+        text: "Enable Secret Scanning, Push Protection, and Dependabot security updates."
 
-  # =========================
-  # Labels
-  # =========================
-  create_label:
-    name_regex: "^[a-z0-9_.-]{1,50}$"
-    color_regex: "^[0-9a-fA-F]{6}$"
+  # ---------- CODEOWNERS present ----------
+  add_codeowners:
+    require_entries_present: true
+    suggest:
+      - title: "CODEOWNERS"
+        text: "Add CODEOWNERS in .github/CODEOWNERS to enforce team review."
+
+  # ---------- Minimal ruleset ----------
+  create_ruleset_basic:
+    require_approvals_not_zero: true
+    require_codeowner_reviews_true: true
+    block_force_pushes_true: true
+    suggest:
+      - title: "Repository Ruleset"
+        text: "Create an active ruleset on default branch with ≥1 approval, CODEOWNERS, and block force-push."

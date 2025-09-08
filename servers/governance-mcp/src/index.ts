@@ -1,12 +1,13 @@
+// servers/governance-mcp/src/index.ts
+import "dotenv/config";
 import { z } from "zod";
 import { startMcpHttpServer } from "mcp-http";
-import { evaluate, loadPoliciesFlexible } from "./engine.js";
-import path from "node:path";
+import { evaluate, loadPoliciesFlexible, debugConfig } from "./engine.js";
 
 const PORT = Number(process.env.PORT ?? 8715);
 
 const evalSchema = z.object({
-  tool: z.string(),    // e.g. "azure.create_resource_group"
+  tool: z.string(),   // fully-qualified, e.g. "azure.create_resource_group" or "ato.workload.web_app"
   args: z.any(),
   context: z.object({
     env: z.string().optional(),
@@ -15,20 +16,37 @@ const evalSchema = z.object({
   }).optional(),
 }).strict();
 
+const oscalSchema = z.object({
+  steps: z.array(z.object({
+    tool: z.string(),
+    args: z.any(),
+    result: z.any().optional()
+  }))
+}).strict();
+
+const evidenceSchema = z.object({
+  items: z.array(z.object({
+    name: z.string(),
+    blob: z.any()
+  }))
+}).strict();
+
 const tools = [
   {
-    name: "governance.debug_config",
-    description: "Show governance loader info",
+    name: "governance.ping",
+    description: "Health check",
     inputSchema: z.object({}).strict(),
-    handler: async () => {
-      const dir = process.env.GOVERNANCE_RULES_DIR || path.resolve(process.cwd(), "governance");
-      const policies = loadPoliciesFlexible();
-      return { content: [{ type: "json" as const, json: { dir, policyCount: policies.length } }] };
-    }
+    handler: async () => ({ content: [{ type: "json" as const, json: { ok: true } }] })
+  },
+  {
+    name: "governance.debug_config",
+    description: "Return rules directory and compiled policy count.",
+    inputSchema: z.object({}).strict(),
+    handler: async () => ({ content: [{ type: "json" as const, json: debugConfig() }] })
   },
   {
     name: "governance.dump_policies",
-    description: "Dump compiled policies after YAML/JSON load",
+    description: "Dump all compiled policies (after YAML/JSON load).",
     inputSchema: z.object({}).strict(),
     handler: async () => {
       const policies = loadPoliciesFlexible();
@@ -44,42 +62,29 @@ const tools = [
       return { content: [{ type: "json" as const, json: out }] };
     }
   },
-  {
-    name: "governance.ping",
-    description: "Health check",
-    inputSchema: z.object({}).strict(),
-    handler: async () => ({ content: [{ type: "json" as const, json: { ok: true } }] })
-  },
+  // Optional helpers
   {
     name: "governance.generate_oscal_snapshot",
-    description: "Create a minimal OSCAL-like JSON snapshot from executed steps.",
-    inputSchema: z.object({
-      steps: z.array(z.object({
-        tool: z.string(),
-        args: z.any(),
-        result: z.any().optional()
-      }))
-    }).strict(),
-    handler: async (a: { steps: any[]; }) => {
+    description: "Return a minimal OSCAL-like JSON snapshot from executed steps.",
+    inputSchema: oscalSchema,
+    handler: async (a: z.infer<typeof oscalSchema>) => {
       const snapshot = {
         system: { name: "Navy Platform System", timestamp: new Date().toISOString() },
         implementedRequirements: a.steps.map(s => ({
           tool: s.tool,
-          satisfiedControls: [],
-        })),
+          satisfiedControls: [] // extend by mapping evaluate(s.tool,s.args) to control IDs if you embed them
+        }))
       };
       return { content: [{ type: "json" as const, json: snapshot }] };
     }
   },
   {
     name: "governance.export_evidence_bundle",
-    description: "Return a simple evidence bundle (JSON) you can later zip/store.",
-    inputSchema: z.object({
-      items: z.array(z.object({ name: z.string(), blob: z.any() }))
-    }).strict(),
-    handler: async (a: { items: { name: string; blob: any; }[]; }) => ({ content: [{ type: "json" as const, json: { ok: true, count: a.items.length } }] })
+    description: "Return a simple evidence bundle (opaque JSON) you can zip/store elsewhere.",
+    inputSchema: evidenceSchema,
+    handler: async (a: z.infer<typeof evidenceSchema>) => ({ content: [{ type: "json" as const, json: { ok: true, count: a.items.length } }] })
   }
 ];
 
-console.log(`[MCP] governance-mcp listening on :${PORT}`);
+console.log(`[MCP] governance-mcp listening on :${PORT} | rules=${process.env.GOVERNANCE_RULES_DIR || "governance/"}`);
 startMcpHttpServer({ name: "governance-mcp", version: "0.1.0", port: PORT, tools });

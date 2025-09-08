@@ -1,222 +1,220 @@
 import "dotenv/config";
 import express from "express";
-import fetch from "node-fetch";
-import fs from "node:fs";
-import path from "node:path";
-import crypto from "node:crypto";
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { deepSanitize } from "./sanitize.js";
 
-function toJSONSchema(schema: any) {
-  return zodToJsonSchema(schema, { $refStrategy: "none" });
-}
+const PORT = Number(process.env.PORT ?? 8700);
 
-const app = express();
-app.use(express.json({ limit: "1mb" }));
-
-// ---- services ----
+// IMPORTANT: base URLs should be the service root (no trailing /mcp)
+// We will call `${base}/mcp` for JSON-RPC.
 const services: Record<string, string> = {
-  platform: process.env.PLATFORM_MCP_URL || "http://127.0.0.1:8710",
-  github: process.env.GITHUB_MCP_URL || "http://127.0.0.1:8711",
-  onboarding: process.env.ONBOARDING_MCP_URL || "http://127.0.0.1:8714",
-  azure: process.env.AZURE_MCP_URL || "http://127.0.0.1:8799",
-  teams: process.env.TEAMS_MCP_URL || "http://127.0.0.1:8713",
-  governance: process.env.GOVERNANCE_MCP_URL || "http://127.0.0.1:8715",
+  azure:      process.env.AZURE_URL      || "http://127.0.0.1:8711",
+  github:     process.env.GITHUB_URL     || "http://127.0.0.1:8712",
+  onboarding: process.env.ONBOARDING_URL || "http://127.0.0.1:8714",
+  governance: process.env.GOVERNANCE_URL || "http://127.0.0.1:8715",
+  platform:   process.env.PLATFORM_URL   || "http://127.0.0.1:8716",
+  developer:  process.env.DEVELOPER_URL  || "http://127.0.0.1:8717",
 };
 
-// ---- audit helpers ----
-const AUDIT_DIR = process.env.AUDIT_DIR || path.resolve(process.cwd(), "logs");
-const AUDIT_FILE = path.join(AUDIT_DIR, "audit.jsonl");
-fs.mkdirSync(AUDIT_DIR, { recursive: true });
+const app = express();
+app.use(express.json());
 
-function redact(v: any) {
-  const text = JSON.stringify(v);
-  return text
-    .replace(/("password"\s*:\s*")([^"]+)(")/gi, '$1***REDACTED***$3')
-    .replace(/("connectionString"\s*:\s*")([^"]+)(")/gi, '$1***REDACTED***$3')
-    .replace(/("secret|token|key"\s*:\s*")([^"]+)(")/gi, '$1***REDACTED***$3');
-}
-function auditWrite(entry: any) {
-  const line = JSON.stringify(entry);
-  fs.appendFile(AUDIT_FILE, line + "\n", () => { });
-}
+// -------------------- helpers --------------------
 
-async function postJsonRpc(baseUrl: string, method: string, params?: any, timeoutMs = 15000) {
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const r = await fetch(`${baseUrl}/mcp`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: Date.now(), method, params }),
-      signal: controller.signal
-    });
-    const ct = r.headers.get("content-type") || "";
-    const text = await r.text();
-    if (!ct.includes("application/json")) throw new Error(`Upstream ${baseUrl} returned ${r.status} ${ct}: ${text.slice(0, 200)}`);
-    return { status: r.status, json: JSON.parse(text) };
-  } finally {
-    clearTimeout(t);
-  }
+async function postJsonRpc(baseUrl: string, method: string, params: any) {
+  const body = { jsonrpc: "2.0", id: Date.now(), method, params };
+  const r = await fetch(`${baseUrl}/mcp`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const text = await r.text();
+  let json: any;
+  try { json = JSON.parse(text); } catch { json = { raw: text }; }
+  return { status: r.status, json };
 }
 
-async function fetchServiceTools(serviceName: string, baseUrl: string) {
-  const { json } = await postJsonRpc(baseUrl, "tools/list");
-  const list = json?.result?.tools ?? [];
-  return list.map((t: any) => {
-    const remoteName: string = t.name;
-    const parts = String(remoteName).split(".");
-    const localName = parts.length > 1 ? parts.slice(1).join(".") : remoteName;
-    return { localName, remoteName, description: t.description, inputSchema: t.inputSchema };
+/**
+ * Fetch a service's tools and normalize to:
+ *   - remoteName: as published by the MCP
+ *   - localName:  remote name with leading "<svc>." removed if present
+ */
+async function fetchServiceTools(svc: string, baseUrl: string): Promise<Array<{
+  remoteName: string;
+  localName: string;
+  description?: string;
+  inputSchema?: any;
+}>> {
+  const { status, json } = await postJsonRpc(baseUrl, "tools/list", {});
+  if (status !== 200 || !json?.result?.tools) return [];
+  const tools: Array<{ name: string; description?: string; inputSchema?: any }> = json.result.tools;
+
+  return tools.map((t) => {
+    const remoteName = t.name; // e.g. "azure.create_app_service_plan" OR "create_app_service_plan"
+    const prefix = `${svc}.`;
+    const localName = remoteName.startsWith(prefix) ? remoteName.slice(prefix.length) : remoteName;
+    return { remoteName, localName, description: t.description, inputSchema: t.inputSchema };
   });
 }
 
-// ---- governance preflight ----
-async function governanceEvaluate(reqId: string, serviceName: string, toolLocalOrRemote: string, args: any) {
-  const gov = services.governance;
-  if (!gov) return { decision: "allow" as const, reasons: [], policyIds: [], suggestions: [] };
-  // Tool FQ the way governance expects it:
-  const toolFq = toolLocalOrRemote.includes(".")
-    ? toolLocalOrRemote
-    : `${serviceName}.${toolLocalOrRemote}`;
-  const { json } = await postJsonRpc(gov, "tools/call", {
-    name: "governance.evaluate",
-    arguments: { tool: toolFq, args }
-  });
-  const res = json?.result ?? json; // normalize
-  // governance-mcp result is JSON-RPC “result.content[0].json”
-  const content = res?.content?.find?.((c: any) => c.json)?.json || {};
-  return {
-    decision: content.decision || "allow",
-    reasons: content.reasons || [],
-    policyIds: content.policyIds || [],
-    suggestions: content.suggestions || []
-  };
-}
+// -------------------- list tools --------------------
 
-app.get("/healthz", (_req, res) => {
-  res.json({ ok: true, services });
-});
-
-// ---- list tools ----
-app.post("/a2a/tools/call", async (req, res) => {
-  const started = Date.now();
-  const reqId = crypto.randomUUID();
-  res.setHeader("x-request-id", reqId);
-
-  const { name, arguments: args } = req.body || {};
-  const id = Date.now();
-
-  // If you don’t have these helpers, stub them or remove:
-  const auditBase = { ts: new Date().toISOString(), reqId, name, argsPreview: args }; // keep simple
-  const governedPrefixes = ["azure", "github", "teams"];
-
-  try {
-    if (!name || typeof name !== "string" || !name.includes(".")) {
-      // auditWrite({ ...auditBase, event: "reject", reason: "bad_name" });
-      return res.status(400).json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Expected 'name' like '<service>.<tool>'" } });
-    }
-
-    const firstDot = name.indexOf(".");
-    const serviceName = name.slice(0, firstDot);
-    const toolNameRequested = name.slice(firstDot + 1);
-    const baseUrl = services[serviceName];
-
-    if (!baseUrl) {
-      // auditWrite({ ...auditBase, event: "reject", reason: "unknown_service", serviceName });
-      return res.status(400).json({ jsonrpc: "2.0", id, error: { code: -32601, message: `Unknown service: ${serviceName}` } });
-    }
-
-    // 1) Resolve the *remote* tool name from the upstream service
-    let tools: Array<{ localName: string; remoteName: string }>;
-    try {
-      tools = await fetchServiceTools(serviceName, baseUrl); // must hit POST /mcp tools/list internally
-    } catch (err) {
-      // auditWrite({ ...auditBase, event: "upstream_tools_error", serviceName, error: String(err) });
-      return res.status(502).json({ jsonrpc: "2.0", id, error: { code: -32000, message: `Failed to fetch tools from ${serviceName}` } });
-    }
-
-    const match =
-      tools.find(t => t.localName === toolNameRequested) ||
-      tools.find(t => t.remoteName === toolNameRequested) ||
-      tools.find(t => t.remoteName === `${serviceName}.${toolNameRequested}`);
-
-    if (!match) {
-      // auditWrite({ ...auditBase, event: "reject", reason: "unknown_tool", serviceName, toolNameRequested });
-      return res.status(400).json({ jsonrpc: "2.0", id, error: { code: -32601, message: `Unknown tool: ${name}` } });
-    }
-
-    // 2) Governance preflight ONCE, using the resolved remote name
-    if (governedPrefixes.includes(serviceName) && services.governance) {
-      try {
-        const gov = await postJsonRpc(services.governance, "tools/call", {
-          name: "governance.evaluate",
-          arguments: { tool: match.remoteName, args: args || {} }
-        });
-        const content = gov.json?.result?.content;
-        const evalJson = Array.isArray(content) ? content.find((c: any) => c.json)?.json : null;
-        const decision = evalJson?.decision || "allow";
-        const reasons = evalJson?.reasons || [];
-        const suggestions = evalJson?.suggestions || [];
-
-        if (decision === "deny") {
-          // auditWrite({ ...auditBase, event: "governance_deny", serviceName, tool: match.remoteName, reasons, suggestions });
-          return res.status(403).json({
-            jsonrpc: "2.0", id,
-            error: { code: -32003, message: "GovernanceDenied: not allowed",
-              data: { service: serviceName, tool: match.remoteName, reasons, suggestions } }
-          });
-        }
-        if (decision === "warn") {
-          res.setHeader("x-governance-warning", "true");
-          res.setHeader("x-governance-reasons", encodeURIComponent(JSON.stringify(reasons)));
-          res.setHeader("x-governance-suggestions", encodeURIComponent(JSON.stringify(suggestions)));
-        }
-      } catch (e: any) {
-        console.error("[router] governance preflight error:", e?.message || e);
-        // dev: proceed; prod: you may choose to fail closed
-      }
-    }
-
-    // 3) Forward the call to the upstream MCP
-    const { status, json } = await postJsonRpc(baseUrl, "tools/call", { name: match.remoteName, arguments: args || {} });
-    // auditWrite({ ...auditBase, event: "forwarded", serviceName, tool: match.remoteName, durationMs: Date.now() - started, upstreamStatus: status });
-
-    if (json?.error) return res.status(400).json({ jsonrpc: "2.0", id, error: json.error });
-    return res.json({ jsonrpc: "2.0", id, result: json?.result });
-  } catch (e: any) {
-    // auditWrite({ ...auditBase, event: "router_error", err: String(e?.message || e), durationMs: Date.now() - started });
-    return res.status(500).json({ jsonrpc: "2.0", id, error: { code: -32000, message: e?.message ?? "Server error" } });
-  }
-});
-
-// ---- call tool w/ governance preflight & audit ----
 app.get("/a2a/tools/list", async (_req, res) => {
   try {
     const aggregated: any[] = [];
-    for (const [serviceName, baseUrl] of Object.entries(services)) {
-      if (serviceName === "governance") continue; // hide governance
+
+    for (const [svc, base] of Object.entries(services)) {
       try {
-        const tools = await fetchServiceTools(serviceName, baseUrl); // must use POST /mcp tools/list inside
+        // Governance is internal; skip publishing it as a callable service.
+        if (svc === "governance") continue;
+
+        const tools = await fetchServiceTools(svc, base);
         for (const t of tools) {
+          // We publish a clean external name "<svc>.<localName>"
           aggregated.push({
-            name: `${serviceName}.${t.localName}`,
+            name: `${svc}.${t.localName}`,
             description: t.description,
-            inputSchema: t.inputSchema, // <-- pass through
+            inputSchema: t.inputSchema,
           });
         }
-      } catch (err) {
-        console.error(`Failed to fetch tools from ${serviceName}:`, err);
+      } catch (e) {
+        console.error(`[router] tools/list: failed for ${svc}:`, e);
       }
     }
-    res.json({ jsonrpc: "2.0", id: Date.now(), result: { tools: aggregated } });
-  } catch (err) {
-    console.error("Error listing tools:", err);
-    res.status(500).json({ error: "Failed to list tools" });
+
+    res.json({
+      jsonrpc: "2.0",
+      id: Date.now(),
+      result: {
+        tools: deepSanitize(aggregated),
+      },
+    });
+  } catch (e) {
+    console.error("[router] tools/list error:", e);
+    res.status(500).json({
+      jsonrpc: "2.0",
+      id: Date.now(),
+      error: { code: -32000, message: "Failed to list tools" },
+    });
   }
 });
 
-const PORT = Number(process.env.PORT || 8700);
+// -------------------- call tool --------------------
+
+app.post("/a2a/tools/call", async (req, res) => {
+  const id = Date.now();
+  try {
+    const { name, arguments: args } = req.body || {};
+    if (!name || typeof name !== "string" || !name.includes(".")) {
+      return res.status(400).json({
+        jsonrpc: "2.0",
+        id,
+        error: { code: -32602, message: "Expected 'name' like '<service>.<tool>'" }
+      });
+    }
+
+    const firstDot = name.indexOf(".");
+    const svc = name.slice(0, firstDot);                 // "azure"
+    const localRequested = name.slice(firstDot + 1);     // "create_app_service_plan"
+
+    const base = services[svc];
+    if (!base) {
+      return res.status(400).json({
+        jsonrpc: "2.0",
+        id,
+        error: { code: -32601, message: `Unknown service: ${svc}` }
+      });
+    }
+
+    // Discover current tool names from the target MCP
+    const tools = await fetchServiceTools(svc, base);
+
+    // Resolve to a remote name the MCP understands:
+    // 1) exact local match
+    // 2) remote equals the provided RHS as-is
+    // 3) remote equals "<svc>.<local>"
+    const remoteMatch =
+      tools.find(t => t.localName === localRequested)?.remoteName ||
+      tools.find(t => t.remoteName === localRequested)?.remoteName ||
+      `${svc}.${localRequested}`; // safe fallback
+
+    // Forward the JSON-RPC call to the target MCP
+    const { status, json } = await postJsonRpc(base, "tools/call", {
+      name: remoteMatch,
+      arguments: args || {}
+    });
+
+    // If the MCP truly doesn't have the tool, return a consistent error
+    if (json?.error && (json.error.code === -32601 || /unknown tool/i.test(String(json.error.message)))) {
+      return res.status(400).json({
+        jsonrpc: "2.0",
+        id,
+        error: { code: -32601, message: `Unknown tool: ${name}` }
+      });
+    }
+
+    // Pass through the JSON-RPC envelope, but sanitize payloads
+    const safe = deepSanitize(json);
+    return res.status(status).json(safe);
+
+  } catch (e: any) {
+    console.error("[router] tools/call error:", e);
+    return res.status(502).json({
+      jsonrpc: "2.0",
+      id,
+      error: { code: -32000, message: String(e?.message || e) }
+    });
+  }
+});
+
+app.post("/mcp", async (req, res) => {
+  const { id, method, params } = req.body || {};
+  try {
+    if (method === "tools/list") {
+      // reuse your existing aggregator
+      const r = await fetch(`${services.platform}/mcp`, { // or aggregate across all services yourself
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: Date.now(), method: "tools/list", params: {} })
+      });
+      const j = await r.json();
+      // If you prefer: aggregate all services here the same way you do in /a2a/tools/list
+      return res.json({ jsonrpc: "2.0", id, result: j.result });
+    }
+
+    if (method === "tools/call") {
+      const name = params?.name;
+      const args = params?.arguments ?? {};
+      // forward to your existing A2A call and wrap response back into MCP shape
+      const r = await fetch(`${process.env.ROUTER_URL || "http://127.0.0.1:8700"}/a2a/tools/call`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name, arguments: args })
+      });
+      const txt = await r.text();
+      let body: any; try { body = JSON.parse(txt); } catch { body = { raw: txt }; }
+
+      if (!r.ok || body.error) {
+        return res.status(200).json({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: `Error: ${JSON.stringify(body.error || body).slice(0,800)}` }], isError: true }
+        });
+      }
+
+      return res.json({ jsonrpc: "2.0", id, result: body.result });
+    }
+
+    // default
+    return res.status(400).json({ jsonrpc: "2.0", id, error: { code: -32601, message: `Unknown method ${method}` } });
+  } catch (e: any) {
+    return res.status(200).json({
+      jsonrpc: "2.0",
+      id,
+      result: { content: [{ type: "text", text: `Router MCP error: ${String(e?.message || e)}` }], isError: true }
+    });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`[router] listening on :${PORT}`);
-  console.log(`[router] services:`, services);
 });

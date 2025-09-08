@@ -1,0 +1,3 @@
+{"ts":"2025-09-07T18:32:11.034Z","tool":"azure.create_resource_group","status":200,"ok":true,"request":{"name":"rg-ml-sbx-jdoe","location":"usgovvirginia"},"response":{"code":-32000,"message":"Unknown tool: create_resource_group"}}
+{"ts":"2025-09-07T18:32:48.373Z","tool":"azure.create_resource_group","status":200,"ok":true,"request":{"name":"rg-ml-sbx-jrs","location":"usgovvirginia"},"response":{"code":-32000,"message":"Unknown tool: create_resource_group"}}
+{"ts":"2025-09-07T18:33:13.980Z","tool":"azure.create_resource_group","status":200,"ok":true,"request":{"name":"rg-ml-sbx-jrs1","location":"usgovvirginia"},"response":{"code":-32000,"message":"Unknown tool: create_resource_group"}}

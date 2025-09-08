@@ -13,6 +13,14 @@
         "auth": "workspace:*",
         "governance-mcp": "workspace:*",
         "zod": "^3.23.8",
-        "dotenv": "^16.4.5"
+        "dotenv": "^16.4.5",
+        "@azure/identity": "*",
+        "@azure/arm-resources": "*",
+        "@azure/arm-appservice": "*",
+        "@azure/arm-keyvault": "*",
+        "@azure/arm-network": "*",
+        "@azure/arm-storage": "*",
+        "@azure/arm-operationalinsights": "*",
+        "@azure/arm-monitor": "*"
     }
 }
