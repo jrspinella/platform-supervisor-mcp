@@ -1,4 +1,11 @@
 {
-"extends": "../../tsconfig.base.json",
-"include": ["src", "../../../packages/mcp-http/src"]
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "../",
+    "paths": {
+      "@platform/*": ["../../packages/*/src"]
+    }
+  },
+  "include": ["src", "../../../packages/mcp-http/src", "../platform-mcp/src"]
 }

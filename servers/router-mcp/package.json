@@ -1,0 +1,26 @@
+{
+    "name": "router",
+    "version": "0.1.0",
+    "type": "module",
+    "main": "dist/index.js",
+    "types": "dist/index.d.ts",
+    "scripts": {
+        "dev": "tsx src/index.ts",
+        "build": "tsc -p tsconfig.json",
+        "clean": "rimraf dist"
+    },
+    "dependencies": {
+        "@platform/governance-core": "workspace:*",
+        "cors": "^2.8.5",
+        "dotenv": "^16.4.5",
+        "express": "^4.19.2",
+        "js-yaml": "^4.1.0",
+        "node-fetch": "^3.3.2",
+        "zod-to-json-schema": "^3.23.5"
+    },
+    "devDependencies": {
+        "@types/cors": "^2.8.19",
+        "@types/express": "^5.0.3",
+        "@types/js-yaml": "^4.0.9"
+    }
+}

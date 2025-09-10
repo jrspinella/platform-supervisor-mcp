@@ -1,20 +1,24 @@
 {
-"name": "platform-agents",
-"private": true,
-"packageManager": "pnpm@9.0.0",
-"scripts": {
-"build": "pnpm -r --filter ./packages/* --filter ./servers/* --filter ./apps/* run build",
-"dev:github": "pnpm --filter github-mcp run dev",
-"dev:azure": "pnpm --filter azure-mcp run dev",
-"dev:router": "pnpm --filter router run dev",
-"dev:supervisor": "pnpm --filter supervisor run dev"
-},
-"devDependencies": {
-"typescript": "~5.5.4",
-"tsx": "^4.16.0",
-"@types/node": "^20.14.10",
-"zod": "^3.23.8",
-"zod-to-json-schema": "^3.23.5",
-"dotenv": "^16.4.5"
-}
+  "name": "platform-supervisor-mcp",
+  "private": true,
+  "packageManager": "pnpm@9.0.0",
+  "scripts": {
+    "build": "pnpm -w -r run build --if-present",
+    "dev:router": "pnpm -C servers/router dev",
+    "dev:supervisor": "pnpm -C apps/supervisor dev",
+    "dev:supervisor-chat": "pnpm -C apps/supervisor-chat dev",
+    "dev:azure-mcp": "pnpm -C servers/azure-mcp dev",
+    "dev:onboarding-mcp": "pnpm -C servers/onboarding-mcp dev",
+    "dev:github-mcp": "pnpm -C servers/github-mcp dev",
+    "dev:governance-mcp": "pnpm -C servers/governance-mcp dev",
+    "dev:platform-mcp": "pnpm -C servers/platform-mcp dev",
+    "dev:developer-mcp": "pnpm -C servers/developer-mcp dev"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "rimraf": "^6.0.1",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "zod": "^3.25.8"
+  }
 }

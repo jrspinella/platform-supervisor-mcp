@@ -1,177 +1,194 @@
-import { z } from "zod";
+// servers/platform-mcp/src/tools.scan.ts
 import type { ToolDef } from "mcp-http";
+import { z } from "zod";
+import { mcpJson, mcpText } from "./lib/runtime.js";
+import { getPolicyDoc } from "@platform/governance-core";
 
-// helpers you likely already have:
-const mcpJson = (json: any) => [{ type: "json" as const, json }];
-const mcpText = (text: string) => [{ type: "text" as const, text }];
+type CallFn = (name: string, args: any) => Promise<any>;
 
-async function callRouterTool(name: string, args: any) {
-  const r = await fetch((process.env.ROUTER_URL || "http://127.0.0.1:8700") + "/a2a/tools/call", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ name, arguments: args || {} })
-  });
-  const text = await r.text();
-  let body: any; try { body = JSON.parse(text); } catch { body = { raw: text }; }
-  return { ok: r.ok, status: r.status, body };
-}
-
-function firstJson(body: any) {
-  const content = body?.result?.content;
-  if (Array.isArray(content)) return content.find((c: any) => c.json)?.json;
-  return null;
-}
-
-async function tryOne<T=any>(calls: Array<{ name: string; args: any }>): Promise<{ ok: boolean; json: T | null; raw: any }> {
-  for (const c of calls) {
-    const r = await callRouterTool(c.name, c.args);
-    if (r.ok) {
-      const j = firstJson(r.body) ?? r.body?.result ?? r.body;
-      return { ok: true, json: j as T, raw: r.body };
+// Pull the first JSON block out of a tool result
+function firstJsonBlock(r: any) {
+  if (Array.isArray(r?.content)) {
+    for (const c of r.content) {
+      if (c?.type === "json" && c?.json != null) return c.json;
     }
   }
-  return { ok: false, json: null, raw: { error: "no method worked" } };
+  return r?.json ?? r;
 }
 
-async function evalAto(toolKey: string, cfg: any) {
-  const r = await callRouterTool("governance.evaluate", { tool: toolKey, args: cfg });
-  const j = firstJson(r.body);
-  return j || { decision: "allow", reasons: [], policyIds: [], suggestions: [] };
+function selectAtoProfile(doc: any) {
+  const profileFromEnv = process.env.ATO_PROFILE?.trim();
+  const defaultFromYaml = doc?.ato?.defaultProfile;
+  const profileName = profileFromEnv || defaultFromYaml || "default";
+  const profile = doc?.ato?.profiles?.[profileName] ?? {};
+  return { profileName, profile };
 }
 
-function formatFinding(resourceId: string, ev: any, friendly?: { title?: string; severity?: string; rationale?: string; fix?: any; controls?: string[]; references?: any[] }) {
-  const lines: string[] = [];
-  const title = friendly?.title || "ATO advisory";
-  const sev = friendly?.severity ? ` (${friendly.severity})` : "";
-  lines.push(`• ${title}${sev}`);
-  lines.push(`  Resource: ${resourceId}`);
-  if (friendly?.rationale) lines.push(`  Why it matters: ${friendly.rationale}`);
-  if (Array.isArray(ev?.reasons) && ev.reasons.length) lines.push(`  Evidence: ${ev.reasons.join(" | ")}`);
-  if (friendly?.fix) {
-    lines.push(`  How to fix:`);
-    if (friendly.fix.cli)   lines.push(`    CLI:\n${String(friendly.fix.cli).split("\n").map(l=>"      "+l).join("\n")}`);
-    if (friendly.fix.portal)lines.push(`    Portal: ${friendly.fix.portal}`);
-    if (friendly.fix.bicep) lines.push(`    Bicep:\n${String(friendly.fix.bicep).split("\n").map(l=>"      "+l).join("\n")}`);
-    if (friendly.fix.notes) lines.push(`    Notes: ${friendly.fix.notes}`);
+function getChecksFor(kind: "subscription" | "resourceGroup" | "webapp", doc: any) {
+  // Prefer profile overrides, fall back to global checks area
+  const { profile } = selectAtoProfile(doc);
+  const fromProfile =
+    profile?.checks?.[kind] ||
+    profile?.[kind]?.checks;
+  const globalChecks =
+    doc?.ato?.checks?.[kind] ||
+    doc?.ato?.[kind]?.checks;
+
+  // Normalize to a dictionary keyed by code
+  const checksArray: any[] =
+    Array.isArray(fromProfile) ? fromProfile :
+    Array.isArray(globalChecks) ? globalChecks : [];
+
+  const byCode: Record<string, any> = {};
+  for (const c of checksArray) {
+    if (!c?.code) continue;
+    byCode[c.code] = {
+      code: c.code,
+      title: c.title,
+      severity: c.severity,
+      controls: c.controls,          // e.g., ["AC-3","SC-7"]
+      recommendation: c.recommendation,
+      fix: c.fix                     // optional mapping hint
+    };
   }
-  if (Array.isArray(friendly?.controls) && friendly.controls.length) lines.push(`  Controls: ${friendly.controls.join(", ")}`);
-  if (Array.isArray(friendly?.references) && friendly.references.length) {
-    lines.push(`  References:`);
-    for (const r of friendly.references) lines.push(`    - ${r.label}${r.link ? ` — ${r.link}` : ""}`);
-  }
-  if (Array.isArray(ev?.suggestions) && ev.suggestions.length) {
-    lines.push(`  Suggestions:`);
-    for (const s of ev.suggestions) lines.push(`    - ${s.title ? `${s.title}: ` : ""}${s.text}`);
-  }
-  return lines.join("\n");
+  return byCode;
 }
 
-export const tool_platform_scan_workloads: ToolDef = {
-  name: "platform.scan_workloads",
-  description: "Scan App Services for ATO warnings (HTTPS-only, TLS, FTPS, diagnostics, secrets via KV, identity, etc.).",
-  inputSchema: z.object({
-    subscriptionId: z.string().optional(),
-    resourceGroupName: z.string().optional()
-  }).strict(),
-  handler: async (a) => {
-    const scope = { subscriptionId: a.subscriptionId, resourceGroupName: a.resourceGroupName };
+function enrichFindings(findings: any[], checksByCode: Record<string, any>) {
+  return (findings ?? []).map((f) => {
+    const spec = checksByCode[f?.code] || {};
+    return {
+      ...f,
+      title: f?.title || spec?.title,
+      severity: f?.severity || spec?.severity,
+      controls: spec?.controls,
+      recommendation: f?.recommendation || spec?.recommendation
+    };
+  });
+}
 
-    // ---- 1) enumerate web apps (try several methods)
-    const appsRes = await tryOne<any[]>([
-      { name: "azure.list_web_apps", args: scope },
-      { name: "azure.list_resources_by_type", args: { ...scope, resourceType: "Microsoft.Web/sites" } },
-      { name: "azure.web_list_apps", args: scope },
-      // add a Resource Graph fallback if you expose one:
-      // { name: "azure.resource_graph_query", args: { query: "...", subscriptions:[a.subscriptionId].filter(Boolean) } },
-    ]);
-    if (!appsRes.ok || !Array.isArray(appsRes.json)) {
+function summarize(findings: any[]) {
+  const counts: Record<string, number> = {};
+  for (const f of findings ?? []) {
+    const sev = (f?.severity || "unknown").toLowerCase();
+    counts[sev] = (counts[sev] ?? 0) + 1;
+  }
+  const total = (findings ?? []).length;
+  return { total, bySeverity: counts };
+}
+
+function textSummary(kind: string, profileName: string, summary: any) {
+  const sev = summary.bySeverity;
+  const parts = [
+    `### ATO scan (${kind}) — profile: **${profileName}**`,
+    `Findings: **${summary.total}**`,
+    `- high: ${sev.high ?? 0}`,
+    `- medium: ${sev.medium ?? 0}`,
+    `- low: ${sev.low ?? 0}`,
+    `- info: ${sev.info ?? 0}`
+  ];
+  return parts.join("\n");
+}
+
+/**
+ * These forward to underlying azure.* scan tools,
+ * then enrich with ATO metadata (NIST controls, severity, recommendations)
+ * loaded from governance-core YAML.
+ */
+export function makeScanTools(call: CallFn): ToolDef[] {
+  const scan_ato_rg: ToolDef = {
+    name: "platform.scan_ato_rg",
+    description: "Run ATO baseline checks for a Resource Group (enriched with NIST mappings).",
+    inputSchema: z.object({
+      resourceGroupName: z.string()
+    }).strict(),
+    handler: async (a: any) => {
+      const doc = getPolicyDoc();
+      const { profileName } = selectAtoProfile(doc);
+      const checksByCode = getChecksFor("resourceGroup", doc);
+
+      // Call the underlying Azure scan
+      const res = await call("azure.scan_ato_rg", { resourceGroupName: a.resourceGroupName });
+      const rj = firstJsonBlock(res);
+
+      // Expect azure.scan_ato_rg to return { findings: [...] } or an array
+      const rawFindings = Array.isArray(rj) ? rj : (rj?.findings ?? []);
+      const findings = enrichFindings(rawFindings, checksByCode);
+      const summary = summarize(findings);
+
+      if (res?.isError) {
+        return { content: [...mcpJson({ status: "error", profile: profileName, findings, summary })], isError: true };
+      }
+
       return {
-        isError: true,
         content: [
-          ...mcpText("Could not enumerate Web Apps (no supported azure.* list method worked)."),
-          ...mcpJson({ scope, debug: appsRes.raw })
+          ...mcpJson({ status: "done", profile: profileName, findings, summary }),
+          ...mcpText(textSummary("resource group", profileName, summary))
         ]
       };
     }
-    const apps = appsRes.json;
+  };
 
-    const findings: any[] = [];
-    for (const app of apps) {
-      const rg = app.resourceGroup || app.resourceGroupName || app.id?.split("/resourceGroups/")[1]?.split("/")[0];
-      const name = app.name;
+  const scan_ato_subscription: ToolDef = {
+    name: "platform.scan_ato_subscription",
+    description: "Run ATO baseline checks for the current subscription (or provided subscriptionId).",
+    inputSchema: z.object({
+      subscriptionId: z.string().optional()
+    }).strict(),
+    handler: async (a: any) => {
+      const doc = getPolicyDoc();
+      const { profileName } = selectAtoProfile(doc);
+      const checksByCode = getChecksFor("subscription", doc);
 
-      // ---- 2) gather config/settings/diag (best-effort)
-      const [cfg, stg, diag] = await Promise.all([
-        tryOne<any>([
-          { name: "azure.get_web_app_config", args: { resourceGroupName: rg, name } },
-          { name: "azure.web_get_configuration", args: { resourceGroupName: rg, name } },
-        ]),
-        tryOne<any>([
-          { name: "azure.get_web_app_settings", args: { resourceGroupName: rg, name } },
-          { name: "azure.web_list_app_settings", args: { resourceGroupName: rg, name } },
-        ]),
-        tryOne<any>([
-          { name: "azure.get_diagnostic_settings", args: { resourceId: app.id } },
-        ]),
-      ]);
+      const res = await call("azure.scan_ato_subscription", { subscriptionId: a.subscriptionId });
+      const rj = firstJsonBlock(res);
+      const rawFindings = Array.isArray(rj) ? rj : (rj?.findings ?? []);
+      const findings = enrichFindings(rawFindings, checksByCode);
+      const summary = summarize(findings);
 
-      const siteConfig = (cfg.json && (cfg.json.properties || cfg.json)) || {};
-      const appSettingsProps = (stg.json && (stg.json.properties || stg.json)) || {};
-      const diagWsId = (diag.json && (diag.json.workspaceId || diag.json?.properties?.workspaceId)) || undefined;
-
-      // ---- 3) build config for ATO governance
-      const configForAto = {
-        id: app.id,
-        name: name,
-        properties: {
-          httpsOnly: app.properties?.httpsOnly ?? siteConfig.httpsOnly,
-          siteConfig: {
-            minimumTlsVersion: siteConfig.minimumTlsVersion || app.properties?.siteConfig?.minimumTlsVersion,
-            ftpsState: siteConfig.ftpsState || app.properties?.siteConfig?.ftpsState
-          }
-        },
-        diagnosticWorkspaceResourceId: diagWsId,
-        appSettings: appSettingsProps
-      };
-
-      // ---- 4) evaluate against governance (ato.workload.web_app)
-      const ev = await evalAto("ato.workload.web_app", configForAto);
-
-      if (ev.decision !== "allow") {
-        findings.push({
-          resourceId: app.id,
-          kind: "web_app",
-          decision: ev.decision,
-          reasons: ev.reasons,
-          suggestions: ev.suggestions
-        });
+      if (res?.isError) {
+        return { content: [...mcpJson({ status: "error", profile: profileName, findings, summary })], isError: true };
       }
+
+      return {
+        content: [
+          ...mcpJson({ status: "done", profile: profileName, findings, summary }),
+          ...mcpText(textSummary("subscription", profileName, summary))
+        ]
+      };
     }
+  };
 
-    const summary = [
-      `Scanned workloads${a.resourceGroupName ? ` in RG ${a.resourceGroupName}` : ""}:`,
-      `• Web Apps: ${apps.length}`,
-      `• Findings: ${findings.length}`,
-    ].join("\n");
+  const scan_webapp_baseline: ToolDef = {
+    name: "platform.scan_webapp_baseline",
+    description: "Scan a Web App for baseline misconfigurations (TLS, HTTPS-only, FTPS, identity, diagnostics) with ATO enrichment.",
+    inputSchema: z.object({
+      resourceGroupName: z.string(),
+      name: z.string()
+    }).strict(),
+    handler: async (a: any) => {
+      const doc = getPolicyDoc();
+      const { profileName } = selectAtoProfile(doc);
+      const checksByCode = getChecksFor("webapp", doc);
 
-    // Optional: pretty-print each finding (if you attach rich hints in governance)
-    const pretty = findings.length
-      ? "\nFindings:\n" + findings.map(f => `• ${f.resourceId}\n  Reasons: ${f.reasons?.join(" | ") || "(none)"}\n`).join("\n")
-      : "\nNo ATO issues detected.";
+      const res = await call("azure.scan_webapp_baseline", { resourceGroupName: a.resourceGroupName, name: a.name });
+      const rj = firstJsonBlock(res);
+      const rawFindings = Array.isArray(rj) ? rj : (rj?.findings ?? []);
+      const findings = enrichFindings(rawFindings, checksByCode);
+      const summary = summarize(findings);
 
-    return {
-      content: [
-        ...mcpJson({ scope, counts: { webApps: apps.length, findings: findings.length }, findings }),
-        ...mcpText(summary + pretty)
-      ]
-    };
-  }
-};
+      if (res?.isError) {
+        return { content: [...mcpJson({ status: "error", profile: profileName, findings, summary })], isError: true };
+      }
 
-// ---------- Wrap EVERYTHING with governance ----------
-const rawTools: ToolDef[] = [
-  tool_platform_scan_workloads
-]
+      return {
+        content: [
+          ...mcpJson({ status: "done", profile: profileName, findings, summary }),
+          ...mcpText(textSummary("web app", profileName, summary))
+        ]
+      };
+    }
+  };
 
-// Governance is applied here, centrally:
-export const toolsScan: ToolDef[] = rawTools;
+  return [scan_ato_rg, scan_ato_subscription, scan_webapp_baseline];
+}

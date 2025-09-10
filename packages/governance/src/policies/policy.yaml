@@ -1,0 +1,24 @@
+azure:
+  create_resource_group:
+    # BAN names, either exact or substring:
+    deny_names: [cookies, foo, bar]
+    deny_contains: [cookies, foo, bar]       # "rg-cookies" will now be denied
+    # Optionally: deny_regex: "cookies|test|bad"
+
+    # Enforce naming + regions:
+    name_regex: "^(rg-[a-z0-9-]{3,40})$"
+    allowed_regions: [usgovvirginia, usgovarizona]
+
+    # Require tags
+    require_tags: [owner, env]
+
+    # Suggestions (rendered with context: upn, alias, region, etc.)
+    suggest_name: "rg-{{alias}}-sbx"
+    suggest_region: "usgovvirginia"
+    suggest_tags:
+      owner: "{{upn}}"
+      env: "dev"
+
+    # NIST control references that explain WHY:
+    controls: ["CM-2", "CM-6"]   # configuration mgmt baseline & compliance checks
+      

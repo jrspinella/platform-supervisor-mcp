@@ -1,83 +1,116 @@
-import * as express from "express";
-import type { JSONRPCRequest, JSONRPCResponse, ToolHandler } from "./types.js";
-import { toJSONSchema } from "./zodJson.js";
+// packages/mcp-http/src/index.ts
+import _express from "express";
 
+// Robust default resolution for both ESM and CJS builds
+const express = (typeof _express === "function" ? _express : (_express as any).default) as unknown as typeof _express;
 
-export interface ToolDef {
-    name: string; // e.g., "github.create_issue"
-    description: string;
-    inputSchema: any; // zod schema
-    handler: ToolHandler;
+// Re-export types
+export type { ToolDef } from './types';
+
+// (optional) types for your server starter
+export interface StartOptions {
+  name?: string;
+  version?: string;
+  port?: number;
+  path?: string; // e.g., "/mcp"
+  logger?: (line: string) => void;
+  tools?: import('./types').ToolDef[];
+  // add whatever you already expose (tool registry, etc.)
 }
 
+export async function startMcpHttpServer(opts: StartOptions = {}) {
+  const port = opts.port ?? Number(process.env.PORT ?? 8720);
+  const path = opts.path ?? "/mcp";
+  const log = opts.logger ?? ((s) => console.log(`[mcp-http] ${s}`));
 
-interface Options {
-    name: string;
-    version: string;
-    port: number;
-    tools: ToolDef[];
-}
+  const app = express();
+  app.use(express.json());
 
+  // Health
+  app.get("/healthz", (_req, res) => res.json({ ok: true }));
 
-export function startMcpHttpServer(opts: Options) {
-    const app = (express as unknown as () => express.Express)();
-    app.use(express.json({ limit: "1mb" }));
+  // MCP JSON-RPC endpoint
+  app.post(path, async (req, res) => {
+    try {
+      const { jsonrpc, id, method, params } = req.body;
+      if (jsonrpc !== "2.0") {
+        return res.status(400).json({ jsonrpc: "2.0", id, error: { code: -32600, message: "Invalid Request" } });
+      }
 
-    app.get("/healthz", (_: any, res: any) => res.status(204).send());
-
-    app.post("/mcp", async (req: any, res: any) => {
-        const body = req.body as JSONRPCRequest;
-        const reply: JSONRPCResponse = { jsonrpc: "2.0", id: body.id ?? null };
-
-        try {
-            switch (body.method) {
-                case "initialize": {
-                    reply.result = {
-                        protocolVersion: "2024-11-05",
-                        serverInfo: { name: opts.name, version: opts.version },
-                        capabilities: { tools: { listChanged: false } }
-                    };
-                    break;
-                }
-                case "tools/list": {
-                    reply.result = {
-                        tools: opts.tools.map(t => ({
-                            name: t.name,
-                            description: t.description,
-                            inputSchema: toJSONSchema(t.inputSchema)
-                        }))
-                    };
-                    break;
-                }
-                case "tools/call": {
-                    const { name, arguments: args } = body.params ?? {};
-                    const tool = opts.tools.find(t => t.name === name);
-                    if (!tool) throw new Error(`Unknown tool: ${name}`);
-                    const parsed = tool.inputSchema.safeParse(args ?? {});
-                    if (!parsed.success) {
-                        reply.result = {
-                            content: [{ type: "text", text: `Validation error: ${parsed.error.message}` }],
-                            isError: true
-                        };
-                        break;
-                    }
-                    const out = await tool.handler(parsed.data);
-                    reply.result = out;
-                    break;
-                }
-                default:
-                    reply.error = { code: -32601, message: `Method not found: ${body.method}` };
+      switch (method) {
+        case "initialize":
+          return res.json({
+            jsonrpc: "2.0",
+            id,
+            result: {
+              protocolVersion: "2024-11-05",
+              capabilities: {
+                tools: { list: {}, call: {} }
+              },
+              serverInfo: {
+                name: opts.name ?? "mcp-http-server",
+                version: opts.version ?? "1.0.0"
+              }
             }
-        } catch (err: any) {
-            reply.error = { code: -32000, message: err?.message ?? "Server error" };
-        }
+          });
 
+        case "tools/list":
+          const tools = opts.tools?.map(t => ({
+            name: t.name,
+            description: t.description,
+            inputSchema: t.inputSchema
+          })) ?? [];
+          return res.json({
+            jsonrpc: "2.0",
+            id,
+            result: { tools }
+          });
 
-        res.json(reply);
-    });
+        case "tools/call":
+          const tool = opts.tools?.find(t => t.name === params.name);
+          if (!tool) {
+            return res.status(404).json({
+              jsonrpc: "2.0",
+              id,
+              error: { code: -32601, message: "Method not found" }
+            });
+          }
+          try {
+            const result = await tool.handler(params.arguments || {});
+            return res.json({
+              jsonrpc: "2.0",
+              id,
+              result: { content: result.content }
+            });
+          } catch (e: any) {
+            return res.json({
+              jsonrpc: "2.0",
+              id,
+              error: { code: -32000, message: e.message || "Tool execution failed" }
+            });
+          }
 
+        default:
+          return res.status(404).json({
+            jsonrpc: "2.0",
+            id,
+            error: { code: -32601, message: "Method not found" }
+          });
+      }
+    } catch (e: any) {
+      log(`POST ${path} error: ${e?.stack || e}`);
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
 
-    app.listen(opts.port, () => {
-        console.log(`[MCP] ${opts.name}@${opts.version} listening on :${opts.port}`);
-    });
+  // Optional: Return 200 (empty SSE stub) so legacy SSE fallback doesn’t crash
+  app.get(path, (_req, res) => {
+    // Some clients try GET /mcp as a legacy SSE path; respond gently.
+    res
+      .status(200)
+      .type("text/plain")
+      .send("MCP endpoint expects POST JSON-RPC. SSE not enabled.\n");
+  });
+
+  app.listen(port, () => log(`listening on :${port} (path ${path})`));
 }

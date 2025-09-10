@@ -20,3 +20,10 @@ content: Array<
 >;
 isError?: boolean;
 }>;
+
+export type ToolDef = {
+  name: string;
+  description: string;
+  inputSchema: any; // Zod schema
+  handler: ToolHandler;
+};

@@ -1,0 +1,21 @@
+ato:
+  defaultProfile: "default"
+  profiles:
+    default:
+      checks:
+        webapp:
+          - code: APP_TLS_MIN_BELOW_1_2
+            title: "Minimum TLS must be 1.2"
+            severity: high
+            controls: ["SC-13"]
+            recommendation: "Set minimum TLS to 1.2 and enforce HTTPS-only."
+        resourceGroup:
+          - code: RG_REQUIRED_TAGS_MISSING
+            severity: medium
+            controls: ["CM-8", "CM-6"]
+            recommendation: "Add required tags: owner, env"
+        subscription:
+          - code: SUB_ACTIVITY_LOG_EXPORT_MISSING
+            severity: high
+            controls: ["AU-2","AU-6"]
+            recommendation: "Enable diagnostic settings to Log Analytics."

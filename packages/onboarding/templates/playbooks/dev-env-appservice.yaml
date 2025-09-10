@@ -1,0 +1,157 @@
+id: dev-env-appservice
+name: Developer App Service Environment
+version: "1.0"
+
+# Variables the Developer MCP wizard passes in
+inputs:
+  alias: { required: true, description: "Developer short alias (e.g., jdoe)" }
+  upn:   { required: true, description: "User principal name / email" }
+  region: { default: "usgovvirginia" }
+  env:    { default: "dev" }
+  runtime: { default: "NODE|20-lts" }
+  rgName:    { required: true }
+  planName:  { required: true }
+  appName:   { required: true }
+  kvName:    { required: true }
+  stgName:   { required: true }
+  lawName:   { required: true }
+
+# High-level description shown to users
+summary: |
+  Provisions a development-ready App Service stack:
+   - Resource Group
+   - App Service Plan (P1v3)
+   - Web App (HTTPS-only, TLS 1.2, FTPS disabled)
+   - Managed Identity
+   - App Settings (sample)
+   - Key Vault (RBAC)
+   - Storage Account (HTTPS only)
+   - Log Analytics Workspace
+
+tasks:
+
+  - id: rg
+    title: Create Resource Group
+    kind: tool
+    tool:
+      name: azure.create_resource_group
+      args:
+        name: "{{rgName}}"
+        location: "{{region}}"
+        tags:
+          owner: "{{upn}}"
+          env:   "{{env}}"
+
+  - id: plan
+    title: Create App Service Plan (P1v3)
+    kind: tool
+    tool:
+      name: azure.create_app_service_plan
+      args:
+        resourceGroupName: "{{rgName}}"
+        name: "{{planName}}"
+        location: "{{region}}"
+        sku: "P1v3"
+        tags:
+          owner: "{{upn}}"
+          env:   "{{env}}"
+
+  - id: web
+    title: Create Web App
+    kind: tool
+    tool:
+      name: azure.create_web_app
+      args:
+        resourceGroupName: "{{rgName}}"
+        name: "{{appName}}"
+        location: "{{region}}"
+        # NOTE: current azure.create_web_app schema requires this string,
+        # but handler computes the real ID internally. Any non-empty value is fine.
+        serverFarmId: "auto"
+        appServicePlanName: "{{planName}}"
+        httpsOnly: true
+        siteConfig:
+          linuxFxVersion: "{{runtime}}"
+          minimumTlsVersion: "1.2"
+          ftpsState: "Disabled"
+          http20Enabled: true
+          appSettings:
+            - { name: "LOG_LEVEL", value: "info" }
+            - { name: "WEBSITE_RUN_FROM_PACKAGE", value: "0" }
+        tags:
+          owner: "{{upn}}"
+          env:   "{{env}}"
+
+  - id: web-msi
+    title: Enable Managed Identity on Web App
+    kind: tool
+    tool:
+      name: azure.enable_system_assigned_identity
+      args:
+        resourceGroupName: "{{rgName}}"
+        name: "{{appName}}"
+        location: "{{region}}"
+
+  - id: kv
+    title: Create Key Vault (RBAC)
+    kind: tool
+    tool:
+      name: azure.create_key_vault
+      args:
+        resourceGroupName: "{{rgName}}"
+        name: "{{kvName}}"
+        location: "{{region}}"
+        tenantId: "{{tenantId}}"     # OPTIONAL: if your azure MCP infers tenant, you may remove
+        skuName: "standard"
+        enableRbacAuthorization: true
+        publicNetworkAccess: "Enabled"
+        tags:
+          owner: "{{upn}}"
+          env:   "{{env}}"
+
+  - id: storage
+    title: Create Storage Account (HTTPS only)
+    kind: tool
+    tool:
+      name: azure.create_storage_account
+      args:
+        resourceGroupName: "{{rgName}}"
+        name: "{{stgName}}"
+        location: "{{region}}"
+        skuName: "Standard_LRS"
+        kind: "StorageV2"
+        enableHttpsTrafficOnly: true
+        tags:
+          owner: "{{upn}}"
+          env:   "{{env}}"
+
+  - id: law
+    title: Create Log Analytics Workspace
+    kind: tool
+    tool:
+      name: azure.create_log_analytics_workspace
+      args:
+        resourceGroupName: "{{rgName}}"
+        name: "{{lawName}}"
+        location: "{{region}}"
+        sku: "PerGB2018"
+        tags:
+          owner: "{{upn}}"
+          env:   "{{env}}"
+
+  - id: web-appsettings
+    title: Apply sample App Settings to Web App
+    kind: tool
+    tool:
+      name: azure.apply_app_settings
+      args:
+        resourceGroupName: "{{rgName}}"
+        appServicePlanName: "{{planName}}"
+        serverFarmId: "auto"
+        name: "{{appName}}"
+        location: "{{region}}"
+        appSettings:
+          - { name: "ENVIRONMENT", value: "{{env}}" }
+          - { name: "OWNER_UPN",   value: "{{upn}}" }
+          # Example Key Vault reference pattern (adjust to your secret names)
+          # - { name: "DB__PASSWORD", value: "@Microsoft.KeyVault(SecretUri=https://{{kvName}}.vault.azure.net/secrets/DbPassword/)" }

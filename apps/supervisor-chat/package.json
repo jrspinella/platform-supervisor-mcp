@@ -11,10 +11,10 @@
   "dependencies": {
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "mcp-http": "workspace:*",
     "node-fetch": "^3.3.2",
     "openai": "^4.104.0",
-    "zod": "^3.23.8"
+    "zod": "^3.23.8",
+    "mcp-http": "workspace:*"
   },
   "devDependencies": {
     "tsx": "^4.19.1",
