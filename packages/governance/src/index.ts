@@ -1,4 +1,24 @@
 export * from "./types.js";
-export * from "./loaders.js";
-export * from "./evaluate.js";
-export * from "./wrappers.js";
+export * from "./store.js";
+export {
+  loadPoliciesFromYaml,
+  loadPoliciesFromDir,
+  registerPolicies,
+  ensureLoaded,
+  hasAtoProfile,
+  getAtoProfile,
+  getAtoRule,
+  getValidationWarnings,
+  GovernanceValidationError,
+} from "./loaders.js";
+export { evaluate } from "./evaluate.js";
+export { withGovernanceAll, withGovernance } from "./wrappers.js";
+export type { GovernanceFn } from "./wrappers.js";
+export {
+  GovernanceDocSchema,
+  GovernanceDocSchemaStrict,
+  PolicyOnlySchema,
+  PolicyOnlySchemaStrict,
+  AtoOnlySchema,
+  AtoOnlySchemaStrict,
+} from "./schemas.js";

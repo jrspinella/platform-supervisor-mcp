@@ -5,23 +5,27 @@
 azure:
   # ---------- Resource Groups ----------
   create_resource_group:
-    # Disallow specific names
-    deny_names:
-      - cookies
-      - foo
-      - bar
-    # Enforce rg- prefix & kebab-case (3–40 after the prefix)
+    # BAN names, either exact or substring:
+    deny_names: [cookies, foo, bar]
+    deny_contains: [cookies, foo, bar]       # "rg-cookies" will now be denied
+    # Optionally: deny_regex: "cookies|test|bad"
+
+    # Enforce naming + regions:
     name_regex: "^(rg-[a-z0-9-]{3,40})$"
-    # Allowed regions (tighten as needed)
     allowed_regions: [usgovvirginia, usgovarizona]
-    # Required tags
+
+    # Require tags
     require_tags: [owner, env]
-    # Human-helpful suggestions (rendered with context if provided)
+
+    # Suggestions (rendered with context: upn, alias, region, etc.)
     suggest_name: "rg-{{alias}}-sbx"
+    suggest_region: "usgovvirginia"
     suggest_tags:
       owner: "{{upn}}"
       env: "dev"
-    suggest_region: "usgovvirginia"
+
+    # NIST control references that explain WHY:
+    controls: ["CM-2", "CM-6"]   # configuration mgmt baseline & compliance checks
 
   # ---------- App Service Plan ----------
   create_app_service_plan:

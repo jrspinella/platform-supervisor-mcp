@@ -1,140 +1,86 @@
-// servers/platform-mcp/src/compose.ts
-import type { ToolDef } from "mcp-http";
-import { z } from "zod";
+// servers/platform-mcp/src/compose.ts (advisor-enabled, with platform.* aliases)
+import { z } from 'zod';
+import type { ToolDef } from 'mcp-http';
 
-// Local packages
-import { makeAzureTools } from "@platform/azure-core";
-import { makeGitHubTools } from "@platform/github-core";
+import { makeAzureTools, makeAzureScanTools, makeAzureRemediationTools } from '@platform/azure-core';
 
-// governance-core
-import {
-  registerPolicies,
-  loadPoliciesFromYaml,
-  withGovernanceAll,
-  getPolicyDoc
-} from "@platform/governance-core";
+import { makeGithubTools, makeGithubScanTools, makeGithubRemediationTools } from '@platform/github-core';
 
-// Local clients & wrappers
-import { clients } from "./clients.azure.js";
-import { makeGitHubClients } from "./client.github.js";
-import { makeEnsureTools } from "./tools.azure.ensure.js";
-import { makeAliasTools } from "./tools.alias.js";
-import { makeScanTools } from "./tools.scan.js";
-import { makeRemediationTools } from "./tools.remediation.js";
-import { makeOnboardingTools } from "./tools.wizards.js";
+import { evaluate as evaluateGovernance, getAtoProfile, getAtoRule } from '@platform/governance-core';
 
-// The local call signature the wrappers expect
-export type CallFn = (name: string, args: any) => Promise<any>;
+import { createAzureClientsFromEnv } from './clients.azure.js';
+import { createGithubClientFromEnv } from './client.github.js';
+import { auditToolWrapper } from './lib/audit.js';
+import { makeAdvisorTools } from './tools/tools.advisor.js';
+import { autoPlatformAliases } from './tools/tools.alias.js';
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Governance: Load YAML once (robust path handling)
-// ──────────────────────────────────────────────────────────────────────────────
-function resolvePolicyPaths(): string[] {
-  const fromEnv = process.env.GOVERNANCE_POLICIES
-    ?.split(",")
-    .map(s => s.trim())
-    .filter(Boolean);
+export async function composeTools(): Promise<ToolDef[]> {
+  const azureClients = await createAzureClientsFromEnv();
+  const githubClient = await createGithubClientFromEnv();
 
-  if (fromEnv && fromEnv.length) return fromEnv;
+  const az = makeAzureTools({ clients: azureClients, evaluateGovernance, getAtoProfile, getAtoRule });
+  const azScan = makeAzureScanTools({ clients: azureClients, getAtoProfile, getAtoRule });
+  const azRem = makeAzureRemediationTools({ clients: azureClients });
 
-  const base = (process.env.GOVERNANCE_POLICY_DIR || process.cwd() + "/policies").replace(/\/+$/, "");
-  return [
-    `${base}/policy.yaml`,
-    `${base}/ato.yaml`
-  ];
-}
+  const gh = makeGithubTools({ clients: githubClient as any, evaluateGovernance, getAtoProfile, getAtoRule });
+  const ghScan = makeGithubScanTools({ clients: githubClient as any, getAtoProfile, getAtoRule });
+  const ghRem = makeGithubRemediationTools({ clients: githubClient as any });
 
-const mergedPolicyDoc = loadPoliciesFromYaml(resolvePolicyPaths());
-registerPolicies(mergedPolicyDoc);
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Build base toolsets (azure.*, github.*)
-// ──────────────────────────────────────────────────────────────────────────────
-const azureTools: ToolDef[] = makeAzureTools({ clients, namespace: "azure." });
-const githubTools: ToolDef[] = makeGitHubTools({
-  clients: makeGitHubClients(),
-  namespace: "github."
-});
-
-const baseTools: ToolDef[] = [...azureTools, ...githubTools];
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Local invoker so platform.* wrappers call azure.* / github.* locally
-// ──────────────────────────────────────────────────────────────────────────────
-function makeLocalInvoker(all: ToolDef[]) {
-  const map = new Map(all.map(t => [t.name, t]));
-  return async (name: string, args: any) => {
-    const def = map.get(name);
-    if (!def) {
-      return {
-        content: [{ type: "text" as const, text: `Unknown tool: ${name}` }],
-        inputSchema: z.any(),
-        isError: true
-      };
+  // Onboarding example
+  const onboarding: ToolDef[] = [
+    {
+      name: 'platform.onboard_webapp_minimum',
+      description: 'Create RG + Plan + Web App with baseline settings and LAW diagnostics link.',
+      inputSchema: z.object({
+        rg: z.string(),
+        location: z.string(),
+        plan: z.string(),
+        web: z.string(),
+        lawWorkspaceId: z.string().optional()
+      }).strict(),
+      handler: async (a) => {
+        const steps: Array<{ name: string; result?: any; isError?: boolean }> = [];
+        steps.push({ name: 'azure.create_resource_group', result: (await findAndCall(az, 'azure.create_resource_group', { name: a.rg, location: a.location })) });
+        steps.push({ name: 'azure.create_app_service_plan', result: (await findAndCall(az, 'azure.create_app_service_plan', { resourceGroupName: a.rg, name: a.plan, location: a.location, sku: 'P1v3' })) });
+        steps.push({ name: 'azure.create_web_app', result: (await findAndCall(az, 'azure.create_web_app', { resourceGroupName: a.rg, name: a.web, location: a.location, appServicePlanName: a.plan, httpsOnly: true, minimumTlsVersion: '1.2', ftpsState: 'Disabled' })) });
+        if (a.lawWorkspaceId) {
+          steps.push({
+            name: 'azure.remediate_webapp_baseline',
+            result: (await findAndCall(azRem, 'azure.remediate_webapp_baseline', {
+              resourceGroupName: a.rg,
+              name: a.web,
+              defaults: { lawResourceId: a.lawWorkspaceId },
+              dryRun: false
+            }))
+          });
+        }
+        return { content: [{ type: 'json', json: { status: 'done', steps } }] };
+      }
     }
-    try {
-      return await def.handler(args);
-    } catch (e: any) {
-      return {
-        content: [{ type: "text" as const, text: `Error in ${name}: ${e?.message || String(e)}` }],
-        inputSchema: z.any(),
-        isError: true
-      };
-    }
-  };
-}
-
-const call = makeLocalInvoker(baseTools);
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Build platform.* wrappers (NO RECURSION) and wrap with governance
-// ──────────────────────────────────────────────────────────────────────────────
-function buildPlatformWrappers(callFn: CallFn): ToolDef[] {
-  const rawPlatform: ToolDef[] = [
-    ...makeEnsureTools(callFn),
-    ...makeAliasTools(callFn),
-    ...makeScanTools(callFn),
-    ...makeRemediationTools(callFn),
-    ...makeOnboardingTools(callFn)
   ];
-  // Apply governance to platform.* only
-  return withGovernanceAll(rawPlatform);
+
+  const advisor = makeAdvisorTools();
+
+  // Base catalog
+  const base = [
+    ...az, ...azScan, ...azRem,
+    ...gh, ...ghScan, ...ghRem,
+    ...onboarding,
+    ...advisor,
+  ];
+// Auto-generate platform.* aliases for azure.* and github.* tools
+const aliases = autoPlatformAliases(base, ['azure.', 'github.'], 'platform.');
+
+
+const all = [...base, ...aliases];
+
+
+return all.map(auditToolWrapper);
 }
 
-// Debug helpers (not governed)
-const tool_policy_dump: ToolDef = {
-  name: "platform.policy_dump",
-  description: "Return the currently loaded governance policies (merged YAML).",
-  inputSchema: { type: "object", additionalProperties: false, properties: {} },
-  handler: async () => ({ content: [{ type: "json", json: getPolicyDoc() }] })
-};
 
-const tool_debug_governance_eval: ToolDef = {
-  name: "platform.debug_governance_eval",
-  description: "Evaluate governance (tool+args) and return the decision block.",
-  inputSchema: {
-    type: "object",
-    additionalProperties: false,
-    required: ["tool", "args"],
-    properties: { tool: { type: "string" }, args: { type: "object" } }
-  },
-  handler: async (a: { tool: string; args: any }) => {
-    const { evaluate } = await import("@platform/governance-core");
-    const block = evaluate(a.tool, a.args, { via: "platform.mcp" });
-    return {
-      content: [
-        { type: "text", text: `Governance decision for ${a.tool}: ${block.decision}` },
-        { type: "json", json: block }
-      ]
-    };
-  }
-};
-
-// Final export: base tools + governed platform wrappers + debug
-const platformTools = buildPlatformWrappers(call);
-export const allTools: ToolDef[] = [
-  ...baseTools,                 // optional: expose azure.* and github.* directly
-  ...platformTools,             // governed platform.* wrappers
-  tool_policy_dump,
-  tool_debug_governance_eval
-];
+async function findAndCall(list: ToolDef[], name: string, args: any) {
+const t = list.find(x => x.name === name);
+if (!t) throw new Error(`tool not found: ${name}`);
+return await t.handler(args);
+}

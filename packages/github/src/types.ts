@@ -1,33 +1,45 @@
-// packages/github-core/src/types.ts
-import type { ToolDef } from "mcp-http";
-import type { z } from "zod";
-
-export interface GitHubClients {
-  /**
-   * Return a ready-to-use Octokit instance for a given owner/org scope.
-   * The object MUST expose `.rest` with GitHub REST APIs and `.paginate` helper.
-   */
-  getOctoClient: (ownerOrOrg: string) => Promise<{
-    rest: any;
-    paginate: (fn: any, params: Record<string, any>) => Promise<any[]>;
-  }>;
+export interface GithubRepoCreate {
+  owner: string;
+  name: string;
+  description?: string;
+  private?: boolean;
+  visibility?: "public" | "private" | "internal";
+  topics?: string[];
+  autoInit?: boolean;
 }
 
-export type GovernanceFn = (
-  toolFq: string,
-  args: any,
-  context?: any
-) => Promise<{
-  decision: "allow" | "warn" | "deny";
-  reasons?: string[];
-  suggestions?: Array<{ title?: string; text: string }>;
-  policyIds?: string[];
-}>;
-
-export interface MakeGitHubToolsOptions {
-  clients: GitHubClients;
-  evaluateGovernance?: GovernanceFn;
-  namespace?: string; // default "github."
+export interface GithubBranchProtectionRules {
+  branch: string;
+  requiredApprovingReviewCount?: number;
+  requireCodeOwnerReviews?: boolean;
+  dismissStaleReviews?: boolean;
+  enforceAdmins?: boolean;
+  requireStatusChecks?: boolean;
+  requiredStatusChecksContexts?: string[];
 }
 
-export type { ToolDef, z };
+export interface GithubClients {
+  repos: {
+    create(input: GithubRepoCreate): Promise<any>;
+    get(owner: string, repo: string): Promise<any>;
+    listForOrg(org: string, opts?: { type?: "all" | "public" | "private" | "forks" | "sources" | "member"; includeArchived?: boolean }): Promise<any[]>;
+    getBranchProtection(owner: string, repo: string, branch: string): Promise<any>;
+    updateBranchProtection(owner: string, repo: string, rules: GithubBranchProtectionRules): Promise<any>;
+    enableSecurityFeatures(owner: string, repo: string, opts?: { enableDependabot?: boolean; enableAdvancedSecurity?: boolean }): Promise<any>;
+  };
+  actions: {
+    listEnvironments(owner: string, repo: string): Promise<any[]>;
+    getPermissions(owner: string, repo: string): Promise<any>;
+  };
+}
+
+export type MakeGithubToolsOptions = {
+  clients: GithubClients | any;
+  evaluateGovernance?: (toolFq: string, args: any, ctx?: any) => Promise<{ decision: "allow" | "warn" | "deny" }> | { decision: "allow" | "warn" | "deny" };
+  namespace?: string;
+  getAtoProfile?: (profile: string) => any;
+  getAtoRule?: (domain: string, profile: string, code: string) => { controlIds?: string[]; suggest?: string } | null;
+  hasAtoProfile?: (domain: string, profile: string) => boolean;
+};
+
+export type ScanFinding = { code: string; severity: "high" | "medium" | "low" | "info" | "unknown"; meta?: Record<string, any>; controlIds?: string[]; suggest?: string };

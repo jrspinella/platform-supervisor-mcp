@@ -1,85 +1,65 @@
-import type { DecisionBlock, EvaluateContext, PolicyDoc, CreateRgPolicy } from "./types.js";
-import { getPolicyDoc, normalizeToolForPolicy } from "./loaders.js";
+import type { GovernanceBlock } from "./types.js";
+import { ensureLoaded } from "./loaders.js";
 
-const get = (o: any, k: string): any => (o ? o[k] : undefined);
+const TOOL_MAP: Record<string, string> = {
+  "platform.create_resource_group": "azure.create_resource_group",
+  "platform.create_app_service_plan": "azure.create_app_service_plan",
+  "platform.create_web_app": "azure.create_web_app",
+  "platform.create_storage_account": "azure.create_storage_account",
+  "platform.create_key_vault": "azure.create_key_vault",
+  "platform.create_log_analytics": "azure.create_log_analytics_workspace",
+  "platform.create_vnet": "azure.create_virtual_network",
+  "platform.create_subnet": "azure.create_subnet",
+  "platform.create_private_endpoint": "azure.create_private_endpoint",
+};
 
-function render(tpl: string, ctx: Record<string, any>): string {
-  return tpl.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, key) =>
-    ctx[key] == null ? "" : String(ctx[key])
-  );
-}
-function suggestionsFromPolicy(pol: any, ctx: Record<string, any>) {
-  const out: { title?: string; text: string }[] = [];
-  if (pol?.suggest_name)   out.push({ title: "Suggested name",   text: render(pol.suggest_name, ctx) });
-  if (pol?.suggest_region) out.push({ title: "Suggested region", text: render(pol.suggest_region, ctx) });
-  if (pol?.suggest_tags) {
-    const kv = Object.entries(pol.suggest_tags).map(([k, v]) => `${k}: ${render(String(v), ctx)}`);
-    out.push({ title: "Suggested tags", text: kv.join(", ") });
-  }
-  return out;
-}
-const hasAny = (s: string, subs: string[]) =>
-  subs.some(x => s.toLowerCase().includes(x.toLowerCase()));
+export async function evaluate(toolFq: string, args: any): Promise<GovernanceBlock> {
+  const fq = TOOL_MAP[toolFq] || toolFq;
+  const az = ensureLoaded()?.azure || {};
+  const p = (az as any)?.create_resource_group;
 
-export function evaluate(toolFq: string, args: any, ctx: EvaluateContext = {}): DecisionBlock {
-  const doc: PolicyDoc = getPolicyDoc();
-  const norm = normalizeToolForPolicy(toolFq);
-
-  if (norm === "azure.create_resource_group") {
-    const pol: CreateRgPolicy | undefined = get(doc, "azure")?.create_resource_group;
-    if (!pol) return { decision: "allow", reasons: ["no-policy:azure.create_resource_group"] };
-
+  if (fq === "azure.create_resource_group" && p) {
     const reasons: string[] = [];
-    const suggestions = suggestionsFromPolicy(pol, ctx);
+    const suggestions: { title: string; text: string }[] = [];
+    const controls: string[] = Array.isArray(p.controls) ? p.controls : [];
+    const policyIds = ["azure.create_resource_group"];
 
     const name = String(args?.name ?? "");
-    const location = String(args?.location ?? "");
+    const loc = String(args?.location ?? "");
     const tags = args?.tags ?? {};
 
-    // deny_names (exact)
-    if (pol.deny_names?.length && name) {
-      const lc = name.toLowerCase();
-      if (pol.deny_names.map(x => x.toLowerCase()).includes(lc)) {
-        reasons.push(`name '${name}' is denied by policy`);
-      }
+    if (Array.isArray(p.deny_names) && p.deny_names.includes(name)) {
+      reasons.push(`name '${name}' explicitly denied`);
     }
-    // deny_contains (substring)
-    if (pol.deny_contains?.length && name) {
-      if (hasAny(name, pol.deny_contains)) {
-        reasons.push(`name '${name}' contains a banned term (${pol.deny_contains.join(", ")})`);
-      }
+    if (Array.isArray(p.deny_contains) && p.deny_contains.some((w: string) => name.includes(w))) {
+      reasons.push("name contains denied token(s)");
     }
-    // deny_regex (advanced)
-    if (pol.deny_regex && name) {
-      if (new RegExp(pol.deny_regex, "i").test(name)) {
-        reasons.push(`name '${name}' matches a denied pattern`);
-      }
+    if (p.deny_regex) {
+      try { if (new RegExp(p.deny_regex).test(name)) reasons.push("name matches deny_regex"); } catch {/* ignore invalid regex */}
     }
-    // required name pattern
-    if (pol.name_regex && name && !new RegExp(pol.name_regex).test(name)) {
-      reasons.push(`name '${name}' does not match required pattern ${pol.name_regex}`);
+    if (p.name_regex) {
+      try { if (!new RegExp(p.name_regex).test(name)) reasons.push(`name does not match required pattern ${p.name_regex}`); } catch {/* ignore invalid regex */}
     }
-    // allowed regions
-    if (pol.allowed_regions?.length && location && !pol.allowed_regions.includes(location)) {
-      reasons.push(`location '${location}' is not in allowed regions: ${pol.allowed_regions.join(", ")}`);
+    if (Array.isArray(p.allowed_regions) && !p.allowed_regions.includes(loc)) {
+      reasons.push(`region '${loc}' not allowed (${p.allowed_regions.join(", ")})`);
     }
-    // required tags
-    if (pol.require_tags?.length) {
-      const missing = pol.require_tags.filter(k => !(k in tags));
+    if (Array.isArray(p.require_tags)) {
+      const missing = p.require_tags.filter((k: string) => !(k in tags));
       if (missing.length) reasons.push(`missing required tag(s): ${missing.join(", ")}`);
     }
 
-    if (reasons.length) {
-      return {
-        decision: "deny",
-        reasons,
-        suggestions: suggestions.length ? suggestions : undefined,
-        controls: pol.controls && pol.controls.length ? [...pol.controls] : undefined,
-        policyIds: ["azure.create_resource_group"]
-      };
+    if (p.suggest_name) suggestions.push({ title: "Suggested name", text: p.suggest_name });
+    if (p.suggest_region) suggestions.push({ title: "Suggested region", text: p.suggest_region });
+    if (p.suggest_tags) {
+      const kv = Object.entries(p.suggest_tags).map(([k, v]) => `${k}: ${String(v)}`).join(", ");
+      suggestions.push({ title: "Suggested tags", text: kv });
     }
-    return { decision: "allow" };
+
+    if (reasons.length) {
+      return { decision: "deny", reasons, suggestions, controls, policyIds };
+    }
+    return { decision: "allow", policyIds };
   }
 
-  return { decision: "allow", reasons: ["no-policy-for-tool"] };
+  return { decision: "allow", reasons: [`no-policy:${fq}`] };
 }

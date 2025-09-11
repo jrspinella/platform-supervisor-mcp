@@ -7,21 +7,26 @@
     ".": "./dist/index.js"
   },
   "types": "dist/index.d.ts",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "clean": "rimraf dist"
   },
   "dependencies": {
+    "@octokit/auth-app": "^8.1.0",
+    "@octokit/plugin-retry": "^3.0.9",
+    "@octokit/plugin-throttling": "^3.6.3",
+    "@octokit/rest": "^22.0.0",
+    "@platform/governance-core": "workspace:*",
+    "node-fetch": "^3.3.2",
     "zod": "^3.25.0"
   },
   "peerDependencies": {
-    "mcp-http": "workspace:*",
-    "@octokit/app": "^15.0.0",
-    "@octokit/rest": "^21.0.0"
+    "mcp-http": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
     "typescript": "^5.5.4"
   }
 }

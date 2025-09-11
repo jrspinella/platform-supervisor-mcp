@@ -1,319 +1,161 @@
-import "dotenv/config";
-import express from "express";
-import type { Request, Response } from "express";
+import 'dotenv/config';
+import http from 'node:http';
+import { URL } from 'node:url';
+import { z } from 'zod';
+import pino from 'pino';
+import fetch from 'node-fetch';
+import { chat, configuredFromEnv } from './lib/aoai.js';
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Config
-// ──────────────────────────────────────────────────────────────────────────────
+const log = pino({ name: 'router-mcp' });
 const PORT = Number(process.env.PORT || 8700);
-const PLATFORM_URL = process.env.PLATFORM_URL || "http://127.0.0.1:8721";
 
-const AOAI_ENDPOINT = process.env.AZURE_OPENAI_ENDPOINT || "";
-const AOAI_KEY = process.env.AZURE_OPENAI_API_KEY || "";
-const AOAI_DEPLOYMENT = process.env.AZURE_OPENAI_DEPLOYMENT || ""; // e.g. gpt-4o-mini
+function normalizeRpcUrl(u: string, def: string): string {
+  const url = (u || def).replace(/\/$/, '');
+  return url.endsWith('/rpc') ? url : `${url}/rpc`;
+}
+const PLATFORM_RPC = normalizeRpcUrl(process.env.PLATFORM_RPC || '', 'http://127.0.0.1:8721/rpc');
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Types
-// ──────────────────────────────────────────────────────────────────────────────
-type ToolListItem = {
-  name: string;
-  description?: string;
-  schema?: any; // JSON schema advertised by Platform MCP
-};
-
-type Catalog = {
-  tools: ToolListItem[];
-  byName: Map<string, ToolListItem>;
-};
-
-// ──────────────────────────────────────────────────────────────────────────────
-/** HTTP helpers */
-// ──────────────────────────────────────────────────────────────────────────────
-async function postJson(url: string, body: any) {
+// ── JSON-RPC helpers ──────────────────────────────────────────
+async function rpc(url: string, method: string, params?: any) {
   const res = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body)
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params })
   });
-  const text = await res.text();
-  let json: any = undefined;
-  try { json = JSON.parse(text); } catch { }
-  return { status: res.status, ok: res.ok, text, json };
+  const raw = await res.text();
+  try { return JSON.parse(raw).result; } catch { throw new Error(`RPC ${url} non-JSON: ${raw.slice(0,120)}`); }
 }
 
-async function callAzureChat(system: string, user: string) {
-  if (!AOAI_ENDPOINT || !AOAI_KEY || !AOAI_DEPLOYMENT) {
-    return { ok: false, error: "AzureOpenAI not configured" };
-  }
-  const url = `${AOAI_ENDPOINT}/openai/deployments/${AOAI_DEPLOYMENT}/chat/completions?api-version=2024-02-15-preview`;
-  const body = {
-    messages: [
-      { role: "system", content: system },
-      { role: "user", content: user }
-    ],
-    temperature: 0,
-    response_format: { type: "json_object" }
-  };
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "api-key": AOAI_KEY
-    },
-    body: JSON.stringify(body)
-  });
-  const text = await res.text();
-  let json: any;
-  try { json = JSON.parse(text); } catch { }
-  if (!res.ok) return { ok: false, status: res.status, error: text, json };
-  const content = json?.choices?.[0]?.message?.content ?? "";
-  return { ok: true, content, raw: json };
+// ── Catalog cache ─────────────────────────────────────────────
+let catalog: Array<{ name: string; description?: string; inputSchema?: any }> = [];
+async function refreshCatalog() {
+  const res = await rpc(PLATFORM_RPC, 'tools.list', {});
+  catalog = (res || []).map((t: any) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
+  log.info({ count: catalog.length }, 'catalog refreshed');
 }
 
-function parseFirstJson(s: string): any {
-  try { return JSON.parse(s); } catch { }
-  const a = s.indexOf("{"); const b = s.lastIndexOf("}");
-  if (a >= 0 && b > a) {
-    try { return JSON.parse(s.slice(a, b + 1)); } catch { }
-  }
+function requiredArgsFor(toolName: string): string[] {
+  const t = catalog.find(c => c.name === toolName);
+  const schema = t?.inputSchema;
+  // Accept JSON Schema or zod-ish dumps; best-effort: look for `required` array
+  if (schema && Array.isArray(schema.required)) return schema.required as string[];
+  return [];
+}
+
+// ── Planner (AOAI) ───────────────────────────────────────────
+const nlSystem = [
+  'You are a routing agent for a Platform Engineering MCP. Given an instruction and a list of tools,',
+  'choose the single best tool and arguments. If any required args are missing, include questions.',
+  'Return STRICT JSON: { tool: string, args: object, questions?: string[], rationale?: string }.',
+  'Prefer tools with the prefix platform.* (aliases exist for azure.* and github.*).'
+].join('\n');
+
+async function planWithAoai(instruction: string) {
+  const cfg = configuredFromEnv();
+  if (!cfg) throw new Error('Azure OpenAI not configured.');
+  const summaryCatalog = catalog.map(c => ({ name: c.name, description: c.description })).slice(0, 400);
+  const user = JSON.stringify({ instruction, catalog: summaryCatalog }, null, 2);
+  const out = await chat(cfg, [ { role: 'system', content: nlSystem }, { role: 'user', content: user } ], { max_tokens: 600 });
+  try { return JSON.parse(out); } catch { throw new Error('planner returned non-JSON'); }
+}
+
+function naiveLocalPlan(text: string): { tool: string; args: any; rationale: string } | null {
+  const s = text.trim();
+  const m1 = /create\s+(?:a\s+)?resource\s+group\s+([A-Za-z0-9_-]+)/i.exec(s);
+  const m1loc = /in\s+(?:region\s+)?([A-Za-z0-9-]+)/i.exec(s);
+  if (m1) return { tool: 'platform.create_resource_group', args: { name: m1[1], location: m1loc?.[1] || 'eastus' }, rationale: 'heuristic: create_resource_group' };
+  const m2 = /scan\s+(?:an?\s+)?app\s*service\s*plan\s+([A-Za-z0-9_-]+)\s+in\s+([A-Za-z0-9_-]+)/i.exec(s);
+  if (m2) return { tool: 'platform.scan_appplan_baseline', args: { name: m2[1], resourceGroupName: m2[2] }, rationale: 'heuristic: scan_appplan_baseline' };
+  const m3 = /scan\s+(?:a\s+)?web\s*app\s+([A-Za-z0-9_-]+)\s+in\s+([A-Za-z0-9_-]+)/i.exec(s);
+  if (m3) return { tool: 'platform.scan_webapp_baseline', args: { name: m3[1], resourceGroupName: m3[2] }, rationale: 'heuristic: scan_webapp_baseline' };
   return null;
 }
 
-function candidateTools(instruction: string): ToolListItem[] {
-  const s = instruction.toLowerCase();
+// ── Router method ─────────────────────────────────────────────
+const RouteSchema = z.object({
+  tool: z.string(),
+  args: z.record(z.string(), z.any()).default({}),
+  rationale: z.string().optional(),
+  questions: z.array(z.string()).optional(),
+});
 
-  // Simple signal terms → you can extend this safely
-  const wantsPlan = /(app service plan|asp\b|sku\b)/.test(s);
-  const wantsWeb = /\b(web app|app service (web|site)|https-only|tls|ftps)\b/.test(s);
-  const wantsRG = /\b(resource group|rg\b)/.test(s);
+async function handleRoute(params: any) {
+  const instruction = String(params?.instruction || params?.text || '').trim();
+  if (!instruction) throw new Error('Missing params.instruction (string)');
+  if (catalog.length === 0) await refreshCatalog();
 
-  let items = CATALOG.tools;
+  let plan: z.infer<typeof RouteSchema> | null = null;
 
-  if (wantsPlan) {
-    items = items.filter(t => /app_service_plan/.test(t.name) || /plan/.test((t.description || "").toLowerCase()));
-  } else if (wantsWeb) {
-    items = items.filter(t => /web_app/.test(t.name) || /web app/.test((t.description || "").toLowerCase()));
-  } else if (wantsRG) {
-    items = items.filter(t => /resource_group/.test(t.name));
-  }
-
-  // If we pruned too hard, fall back to all
-  return items.length ? items : CATALOG.tools;
-}
-
-function normalizeArgsKeys(args: any, schema: any) {
-  if (!args || typeof args !== "object") return args;
-
-  // Build canonical set from schema
-  const props: Record<string, any> = schema?.properties || {};
-
-  // Common Azure synonyms → canonical field
-  const synonyms: Record<string, string> = {
-    // RG
-    resource_group: "resourceGroupName",
-    rg: "resourceGroupName",
-    group: "resourceGroupName",
-
-    // Location
-    region: "location",
-    geo: "location",
-
-    // Web/App Plan typicals (no-op unless present)
-    plan: "name",
-    app_service_plan_name: "name"
-  };
-
-  const out: any = { ...args };
-  for (const [k, v] of Object.entries(args)) {
-    const lower = k.toLowerCase();
-    // if key is already canonical, keep it
-    if (props[k]) continue;
-    // if we have a synonym that matches a canonical property, move it
-    const target = synonyms[lower];
-    if (target && props[target] !== undefined && out[target] === undefined) {
-      out[target] = v;
-      delete out[k];
-    }
-  }
-  return out;
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-/** Catalog loading (live from Platform MCP) */
-// ──────────────────────────────────────────────────────────────────────────────
-async function loadPlatformCatalog(): Promise<Catalog> {
-  const r = await postJson(`${PLATFORM_URL}/rpc`, {
-    jsonrpc: "2.0", id: 1, method: "tools.list", params: {}
-  });
-  if (!r.ok || !Array.isArray(r.json?.result)) {
-    throw new Error(`Failed to load catalog from platform MCP: ${r.status} ${r.text}`);
-  }
-  // Keep platform.* by default (you can include developer.* / onboarding.* if you like)
-  const items: ToolListItem[] = r.json.result
-    .filter((t: any) => t?.name && typeof t.name === "string")
-    .filter((t: any) => /^platform\./.test(t.name))
-    .map((t: any) => ({
-      name: t.name,
-      description: t.description || "",
-      schema: t.schema || t.inputSchema || {}
-    }));
-  return { tools: items, byName: new Map(items.map(t => [t.name, t])) };
-}
-
-let CATALOG: Catalog = { tools: [], byName: new Map() };
-
-(async () => {
   try {
-    CATALOG = await loadPlatformCatalog();
-    console.log(`[router] loaded ${CATALOG.tools.length} platform tools from ${PLATFORM_URL}`);
+    const p = await planWithAoai(instruction);
+    plan = RouteSchema.parse({ tool: p.tool, args: p.args || {}, rationale: p.rationale, questions: p.questions });
   } catch (e: any) {
-    console.error("[router] catalog load failed:", e?.message || e);
+    const naive = naiveLocalPlan(instruction);
+    if (!naive) throw e;
+    plan = RouteSchema.parse(naive);
   }
-})();
 
-// ──────────────────────────────────────────────────────────────────────────────
-/** Very light JSON schema validator (required-only).
- *  Swap with AJV for strict type checking if desired. */
-// ──────────────────────────────────────────────────────────────────────────────
-function validateArgs(args: any, schema: any): { ok: boolean; error?: string } {
-  if (!schema || typeof schema !== "object") return { ok: true };
-  const req: string[] = Array.isArray(schema.required) ? schema.required : [];
-  for (const k of req) {
-    if (!(k in (args || {}))) return { ok: false, error: `Missing required field: ${k}` };
-  }
-  return { ok: true };
+  // Add confirmations if required args are missing
+  const required = requiredArgsFor(plan.tool);
+  const missing = required.filter(k => !(k in (plan!.args || {})));
+  const confirmations = (plan.questions || []).concat(missing.map(k => `${k}: ?`));
+
+  return { tool: plan.tool, args: plan.args, rationale: plan.rationale, confirmations: confirmations.length ? confirmations : undefined };
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-/** LLM prompts (2-stage) */
-// ──────────────────────────────────────────────────────────────────────────────
-function toolChoiceSystemPrompt(toolNames: string) {
-  return [
-    "You are a routing function.",
-    "Return ONLY JSON with the fields:",
-    '- "tool": exact tool name string (e.g., "platform.create_resource_group")',
-    '- "rationale": short string (why this tool)',
-    "",
-    "Pick the tool that most directly satisfies the request.",
-    'Prefer tools with prefix "platform." for Azure operations (RG, AppService Plan, Web App, VNet, KV, Storage, LAW).',
-    "Do not include args in this step.",
-    "",
-    "Available tools:",
-    toolNames
-  ].join("\n");
-}
-
-function toolArgsSystemPrompt(toolName: string, schema: any) {
-  return [
-    "You fill ONLY the args for the selected tool.",
-    "Return ONLY JSON with:",
-    '- "args": object that satisfies the tool schema',
-    '- "rationale": short string explaining how fields were inferred',
-    "",
-    "Rules:",
-    "- Use ONLY info stated or trivially implied by the instruction.",
-    "- Do NOT invent fields.",
-    "- Set obvious defaults only if universally sensible (e.g., runtime \"NODE|20-lts\").",
-    "- Keep types correct (string/number/boolean/object).",
-    "",
-    `Tool: ${toolName}`,
-    "Schema (JSON):",
-    JSON.stringify(schema ?? {}, null, 2)
-  ].join("\n");
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Express app
-// ──────────────────────────────────────────────────────────────────────────────
-const app = express();
-app.use(express.json({ limit: "1mb" }));
-
-app.get("/healthz", (_req, res) => res.type("text").send("ok"));
-
-app.post("/refresh-catalog", async (_req, res) => {
+// ── HTTP server (JSON-RPC + basic GETs) ──────────────────────
+const server = http.createServer(async (req, res) => {
   try {
-    CATALOG = await loadPlatformCatalog();
-    res.json({ ok: true, count: CATALOG.tools.length });
+    const url = new URL(req.url || '/', `http://${req.headers.host}`);
+    if (req.method === 'GET' && url.pathname === '/healthz') {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      return res.end('ok');
+    }
+    if (req.method === 'GET' && url.pathname === '/catalog') {
+      if (catalog.length === 0) await refreshCatalog();
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ count: catalog.length, catalog }));
+    }
+
+    if (req.method === 'POST' && url.pathname === '/rpc') {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const body = Buffer.concat(chunks).toString('utf8');
+      let payload: any;
+      try { payload = JSON.parse(body); } catch { res.writeHead(400); return res.end(JSON.stringify({ error: { message: 'invalid JSON' } })); }
+
+      const { method, params, id } = payload || {};
+      try {
+        if (method === 'nl.route') {
+          const result = await handleRoute(params);
+          res.writeHead(200, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ jsonrpc: '2.0', id, result }));
+        }
+        if (method === 'refresh-catalog') {
+          await refreshCatalog();
+          res.writeHead(200, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ jsonrpc: '2.0', id, result: { ok: true, count: catalog.length } }));
+        }
+        if (method === 'nl.tools') {
+          if (catalog.length === 0) await refreshCatalog();
+          res.writeHead(200, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ jsonrpc: '2.0', id, result: catalog }));
+        }
+        res.writeHead(404, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32601, message: 'Method not found' } }));
+      } catch (e: any) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32000, message: e?.message || String(e) } }));
+      }
+    }
+
+    res.writeHead(404, { 'content-type': 'text/plain' });
+    res.end('not found');
   } catch (e: any) {
-    res.status(500).json({ ok: false, error: e?.message || String(e) });
+    log.error(e, 'unhandled');
+    res.writeHead(500, { 'content-type': 'text/plain' });
+    res.end('error');
   }
 });
 
-app.post("/rpc", async (req: Request, res: Response) => {
-  const { id, method, params } = req.body || {};
-
-  if (method !== "nl.route") {
-    return res.json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Unknown method" } });
-  }
-
-  const instruction: string | undefined = params?.instruction;
-  if (!instruction || typeof instruction !== "string") {
-    return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Missing params.instruction (string)" } });
-  }
-
-  // ── Stage 1: choose tool (no args) ─────────────────────────────────────────
-  const candidates = candidateTools(instruction);
-  const toolNames = candidates.map(t => `- ${t.name} — ${t.description || ""}`).join("\n");
-  const choiceSystem = toolChoiceSystemPrompt(toolNames);
-  const choiceUser = `Instruction: ${instruction}\nReturn ONLY {"tool": "...", "rationale":"..."}`;
-
-  const choice = await callAzureChat(choiceSystem, choiceUser);
-  if (!choice.ok) {
-    return res.json({ jsonrpc: "2.0", id, error: { code: -32001, message: "Router choice call failed", data: choice } });
-  }
-  const choiceJson = parseFirstJson(choice.content);
-  const tool = String(choiceJson?.tool || "");
-  if (!tool) {
-    return res.json({ jsonrpc: "2.0", id, error: { code: -32001, message: "Could not determine a tool from the router." } });
-  }
-  const item = CATALOG.byName.get(tool);
-  if (!item) {
-    return res.json({ jsonrpc: "2.0", id, error: { code: -32001, message: `Unknown or unavailable tool: ${tool}` } });
-  }
-  const rationale1 = String(choiceJson?.rationale || "");
-
-  // ── Stage 2: extract args for chosen tool ───────────────────────────────────
-  const argSystem = toolArgsSystemPrompt(tool, item.schema);
-  const argUser = `Instruction: ${instruction}\nReturn ONLY {"args": {...}, "rationale":"..."}`;
-
-  let argsPass = await callAzureChat(argSystem, argUser);
-  if (!argsPass.ok) {
-    return res.json({ jsonrpc: "2.0", id, error: { code: -32002, message: "Router arg fill call failed", data: argsPass } });
-  }
-  let argsObj = parseFirstJson(argsPass.content) ?? {};
-  let args = argsObj?.args ?? {};
-  args = normalizeArgsKeys(args, item.schema);
-
-  // Validate and repair once if needed
-  let v = validateArgs(args, item.schema);
-  if (!v.ok) {
-    const repairUser =
-      `The previous args failed validation: ${v.error}\n` +
-      `Instruction: ${instruction}\n` +
-      `Re-output ONLY {"args": {...}, "rationale":"..."} that satisfies the schema.`;
-    const repair = await callAzureChat(argSystem, repairUser);
-    if (!repair.ok) {
-      return res.json({ jsonrpc: "2.0", id, error: { code: -32003, message: "Router arg repair failed", data: repair } });
-    }
-    const repaired = parseFirstJson(repair.content) ?? {};
-    args = repaired?.args ?? {};
-    v = validateArgs(args, item.schema);
-    if (!v.ok) {
-      return res.json({ jsonrpc: "2.0", id, error: { code: -32004, message: `Args still invalid: ${v.error}` } });
-    }
-  }
-
-  const rationale2 = String((argsObj?.rationale ?? "").trim());
-
-  return res.json({
-    jsonrpc: "2.0",
-    id,
-    result: { tool, args, rationale: rationale2 || rationale1 || "schema-driven mapping" }
-  });
-});
-
-app.listen(PORT, "127.0.0.1", () => {
-  console.log(`[router] listening on http://127.0.0.1:${PORT}`);
-  console.log(`[router] PLATFORM_URL=${PLATFORM_URL}`);
-  console.log(`[router] AzureOpenAI configured=${!!(AOAI_ENDPOINT && AOAI_KEY && AOAI_DEPLOYMENT)}`);
-});
+server.listen(PORT, () => log.info({ PORT, PLATFORM_RPC }, 'router-mcp listening'));

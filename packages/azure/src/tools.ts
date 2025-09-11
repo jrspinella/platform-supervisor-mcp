@@ -1,13 +1,9 @@
 import { z } from "zod";
 import type { MakeAzureToolsOptions } from "./types.js";
 import { wrapCreate, wrapGet, withGovernanceAll, coerceTags } from "./utils.js";
+import type { ToolDef } from "mcp-http";
+import { makeAzureScanTools } from "./tools/tools.scan.js";
 
-/**
- * NOTE: These are "raw" Azure tools. They EXECUTE immediately.
- * The plan/hold/confirm UX should be implemented by the Platform wrappers (e.g., tools.ensure.ts).
- *
- * Tool names align with your platform wrappers and router conventions.
- */
 export function makeAzureTools(opts: MakeAzureToolsOptions) {
   const { clients, evaluateGovernance, namespace = "azure." } = opts;
   const n = (s: string) => `${namespace}${s}`;
@@ -18,11 +14,7 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
   const create_rg = wrapCreate(
     n("create_resource_group"),
     "Create (or update) an Azure Resource Group.",
-    z.object({
-      name: z.string(),
-      location: z.string(),
-      tags: z.any().optional()
-    }).strict(),
+    z.object({ name: z.string(), location: z.string(), tags: z.any().optional() }).strict(),
     async (a) => {
       const tags = coerceTags(a.tags);
       return clients.resourceGroups.create(a.name, a.location, tags);
@@ -42,13 +34,15 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
   const create_plan = wrapCreate(
     n("create_app_service_plan"),
     "Create an App Service Plan.",
-    z.object({
-      resourceGroupName: z.string(),
-      name: z.string(),
-      location: z.string(),
-      sku: z.union([z.string(), z.record(z.any())]).default("P1"), 
-      tags: z.any().optional()
-    }).strict(),
+    z
+      .object({
+        resourceGroupName: z.string(),
+        name: z.string(),
+        location: z.string(),
+        sku: z.union([z.string(), z.record(z.any())]).default("P1v3"),
+        tags: z.any().optional(),
+      })
+      .strict(),
     async (a) => {
       const tags = coerceTags(a.tags);
       return clients.appServicePlans.create(a.resourceGroupName, a.name, a.location, a.sku, tags);
@@ -68,18 +62,20 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
   const create_web = wrapCreate(
     n("create_web_app"),
     "Create a Web App (Linux) on an App Service Plan.",
-    z.object({
-      resourceGroupName: z.string(),
-      name: z.string(),
-      location: z.string(),
-      appServicePlanName: z.string(),
-      httpsOnly: z.boolean().optional().default(true),
-      linuxFxVersion: z.string().optional(),     // prefer this
-      runtimeStack: z.string().optional(),       // alias (legacy)
-      minimumTlsVersion: z.enum(["1.0","1.1","1.2"]).optional().default("1.2"),
-      ftpsState: z.enum(["AllAllowed","FtpsOnly","Disabled"]).optional().default("Disabled"),
-      tags: z.any().optional()
-    }).strict(),
+    z
+      .object({
+        resourceGroupName: z.string(),
+        name: z.string(),
+        location: z.string(),
+        appServicePlanName: z.string(),
+        httpsOnly: z.boolean().optional().default(true),
+        linuxFxVersion: z.string().optional(),
+        runtimeStack: z.string().optional(),
+        minimumTlsVersion: z.union([z.literal("1.0"), z.literal("1.1"), z.literal("1.2"), z.literal("1.3")]).optional().default("1.2"),
+        ftpsState: z.enum(["AllAllowed", "FtpsOnly", "Disabled"]).optional().default("Disabled"),
+        tags: z.any().optional(),
+      })
+      .strict(),
     async (a) => {
       const linuxFx = a.linuxFxVersion ?? a.runtimeStack;
       const tags = coerceTags(a.tags);
@@ -92,7 +88,7 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
         linuxFxVersion: linuxFx,
         minimumTlsVersion: a.minimumTlsVersion,
         ftpsState: a.ftpsState,
-        tags
+        tags,
       });
     }
   );
@@ -114,11 +110,9 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
   const apply_settings = wrapCreate(
     n("apply_app_settings"),
     "Merge/apply app settings (key/value) on a Web App.",
-    z.object({
-      resourceGroupName: z.string(),
-      name: z.string(),
-      appSettings: z.array(z.object({ name: z.string(), value: z.string() })).min(1)
-    }).strict(),
+    z
+      .object({ resourceGroupName: z.string(), name: z.string(), appSettings: z.array(z.object({ name: z.string(), value: z.string() })).min(1) })
+      .strict(),
     async (a) => clients.webApps.setAppSettings(a.resourceGroupName, a.name, a.appSettings)
   );
 
@@ -128,16 +122,18 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
   const create_kv = wrapCreate(
     n("create_key_vault"),
     "Create Key Vault (RBAC recommended).",
-    z.object({
-      resourceGroupName: z.string(),
-      name: z.string(),
-      location: z.string(),
-      tenantId: z.string(),
-      skuName: z.enum(["standard","premium"]).default("standard"),
-      enableRbacAuthorization: z.boolean().optional().default(true),
-      publicNetworkAccess: z.enum(["Enabled","Disabled"]).optional().default("Enabled"),
-      tags: z.any().optional()
-    }).strict(),
+    z
+      .object({
+        resourceGroupName: z.string(),
+        name: z.string(),
+        location: z.string(),
+        tenantId: z.string(),
+        skuName: z.enum(["standard", "premium"]).default("standard"),
+        enableRbacAuthorization: z.boolean().optional().default(true),
+        publicNetworkAccess: z.enum(["Enabled", "Disabled"]).optional().default("Enabled"),
+        tags: z.any().optional(),
+      })
+      .strict(),
     async (a) => {
       const tags = coerceTags(a.tags);
       return clients.keyVaults.create({
@@ -148,7 +144,7 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
         skuName: a.skuName,
         enableRbacAuthorization: a.enableRbacAuthorization,
         publicNetworkAccess: a.publicNetworkAccess,
-        tags
+        tags,
       });
     }
   );
@@ -166,15 +162,17 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
   const create_sa = wrapCreate(
     n("create_storage_account"),
     "Create a Storage Account (StorageV2, HTTPS only recommended).",
-    z.object({
-      resourceGroupName: z.string(),
-      name: z.string().regex(/^[a-z0-9]{3,24}$/),
-      location: z.string(),
-      skuName: z.enum(["Standard_LRS","Standard_GRS","Standard_RAGRS","Standard_ZRS","Premium_LRS"]).default("Standard_LRS"),
-      kind: z.enum(["StorageV2","BlobStorage","BlockBlobStorage","FileStorage","Storage"]).default("StorageV2"),
-      enableHttpsTrafficOnly: z.boolean().optional().default(true),
-      tags: z.any().optional()
-    }).strict(),
+    z
+      .object({
+        resourceGroupName: z.string(),
+        name: z.string().regex(/^[a-z0-9]{3,24}$/),
+        location: z.string(),
+        skuName: z.enum(["Standard_LRS", "Standard_GRS", "Standard_RAGRS", "Standard_ZRS", "Premium_LRS"]).default("Standard_LRS"),
+        kind: z.enum(["StorageV2", "BlobStorage", "BlockBlobStorage", "FileStorage", "Storage"]).default("StorageV2"),
+        enableHttpsTrafficOnly: z.boolean().optional().default(true),
+        tags: z.any().optional(),
+      })
+      .strict(),
     async (a) => {
       const tags = coerceTags(a.tags);
       return clients.storageAccounts.create({
@@ -184,7 +182,7 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
         skuName: a.skuName,
         kind: a.kind,
         enableHttpsTrafficOnly: a.enableHttpsTrafficOnly,
-        tags
+        tags,
       });
     }
   );
@@ -202,14 +200,16 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
   const create_law = wrapCreate(
     n("create_log_analytics_workspace"),
     "Create a Log Analytics Workspace.",
-    z.object({
-      resourceGroupName: z.string(),
-      name: z.string(),
-      location: z.string(),
-      sku: z.string().optional().default("PerGB2018"),
-      retentionInDays: z.number().int().min(7).max(730).optional(),
-      tags: z.any().optional()
-    }).strict(),
+    z
+      .object({
+        resourceGroupName: z.string(),
+        name: z.string(),
+        location: z.string(),
+        sku: z.string().optional().default("PerGB2018"),
+        retentionInDays: z.number().int().min(7).max(730).optional(),
+        tags: z.any().optional(),
+      })
+      .strict(),
     async (a) => {
       const tags = coerceTags(a.tags);
       return clients.logAnalytics.create({
@@ -218,7 +218,7 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
         location: a.location,
         sku: a.sku,
         retentionInDays: a.retentionInDays,
-        tags
+        tags,
       });
     }
   );
@@ -236,14 +236,9 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
   const create_vnet = wrapCreate(
     n("create_virtual_network"),
     "Create a Virtual Network.",
-    z.object({
-      resourceGroupName: z.string(),
-      name: z.string(),
-      location: z.string(),
-      addressPrefixes: z.array(z.string()).nonempty(),
-      dnsServers: z.array(z.string()).optional(),
-      tags: z.any().optional()
-    }).strict(),
+    z
+      .object({ resourceGroupName: z.string(), name: z.string(), location: z.string(), addressPrefixes: z.array(z.string()).nonempty(), dnsServers: z.array(z.string()).optional(), tags: z.any().optional() })
+      .strict(),
     async (a) => {
       const tags = coerceTags(a.tags);
       return clients.networks.createVnet({
@@ -252,7 +247,7 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
         location: a.location,
         addressPrefixes: a.addressPrefixes,
         dnsServers: a.dnsServers,
-        tags
+        tags,
       });
     }
   );
@@ -267,16 +262,18 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
   const create_subnet = wrapCreate(
     n("create_subnet"),
     "Create a Subnet in a VNet.",
-    z.object({
-      resourceGroupName: z.string(),
-      virtualNetworkName: z.string(),
-      name: z.string(),
-      addressPrefix: z.string(),
-      serviceEndpoints: z.array(z.string()).optional(),
-      delegations: z.array(z.object({ serviceName: z.string() })).optional(),
-      privateEndpointNetworkPolicies: z.enum(["Enabled","Disabled"]).optional(),
-      tags: z.any().optional()
-    }).strict(),
+    z
+      .object({
+        resourceGroupName: z.string(),
+        virtualNetworkName: z.string(),
+        name: z.string(),
+        addressPrefix: z.string(),
+        serviceEndpoints: z.array(z.string()).optional(),
+        delegations: z.array(z.object({ serviceName: z.string() })).optional(),
+        privateEndpointNetworkPolicies: z.enum(["Enabled", "Disabled"]).optional(),
+        tags: z.any().optional(),
+      })
+      .strict(),
     async (a) => {
       const tags = coerceTags(a.tags);
       return clients.networks.createSubnet({
@@ -287,7 +284,7 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
         serviceEndpoints: a.serviceEndpoints,
         delegations: a.delegations,
         privateEndpointNetworkPolicies: a.privateEndpointNetworkPolicies,
-        tags
+        tags,
       });
     }
   );
@@ -295,25 +292,27 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
   const get_subnet = wrapGet(
     n("get_subnet"),
     "Get a Subnet.",
-    z.object({ resourceGroupName: z.string(), vnetName: z.string(), name: z.string() }).strict(),
-    async (a) => clients.networks.getSubnet(a.resourceGroupName, a.vnetName, a.name)
+    z.object({ resourceGroupName: z.string(), virtualNetworkName: z.string(), name: z.string() }).strict(),
+    async (a) => clients.networks.getSubnet(a.resourceGroupName, a.virtualNetworkName, a.name)
   );
 
   const create_pe = wrapCreate(
     n("create_private_endpoint"),
     "Create a Private Endpoint.",
-    z.object({
-      resourceGroupName: z.string(),
-      name: z.string(),
-      location: z.string(),
-      vnetName: z.string(),
-      subnetName: z.string(),
-      targetResourceId: z.string(),
-      groupIds: z.array(z.string()).optional(),
-      privateDnsZoneGroupName: z.string().optional(),
-      privateDnsZoneIds: z.array(z.string()).optional(),
-      tags: z.any().optional()
-    }).strict(),
+    z
+      .object({
+        resourceGroupName: z.string(),
+        name: z.string(),
+        location: z.string(),
+        vnetName: z.string(),
+        subnetName: z.string(),
+        targetResourceId: z.string(),
+        groupIds: z.array(z.string()).optional(),
+        privateDnsZoneGroupName: z.string().optional(),
+        privateDnsZoneIds: z.array(z.string()).optional(),
+        tags: z.any().optional(),
+      })
+      .strict(),
     async (a) => {
       const tags = coerceTags(a.tags);
       return clients.networks.createPrivateEndpoint({
@@ -326,7 +325,7 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
         groupIds: a.groupIds,
         privateDnsZoneGroupName: a.privateDnsZoneGroupName,
         privateDnsZoneIds: a.privateDnsZoneIds,
-        tags
+        tags,
       });
     }
   );
@@ -339,27 +338,24 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
   );
 
   // ──────────────────────────────────────────────────────────────
-  // AKS (for onboarding templates)
+  // AKS (optional)
   // ──────────────────────────────────────────────────────────────
   const create_aks = wrapCreate(
     n("create_aks_cluster"),
     "Create an AKS cluster.",
-    z.object({
-      resourceGroupName: z.string(),
-      name: z.string(),
-      location: z.string(),
-      kubernetesVersion: z.string().optional(),
-      agentPoolProfiles: z.array(z.object({
+    z
+      .object({
+        resourceGroupName: z.string(),
         name: z.string(),
-        count: z.number().int().min(1),
-        vmSize: z.string(),
-        mode: z.enum(["System","User"]).optional().default("System")
-      })).nonempty(),
-      apiServerAccessProfile: z.object({
-        enablePrivateCluster: z.boolean().optional()
-      }).optional(),
-      tags: z.any().optional()
-    }).strict(),
+        location: z.string(),
+        kubernetesVersion: z.string().optional(),
+        agentPoolProfiles: z
+          .array(z.object({ name: z.string(), count: z.number().int().min(1), vmSize: z.string(), mode: z.enum(["System", "User"]).optional().default("System") }))
+          .nonempty(),
+        apiServerAccessProfile: z.object({ enablePrivateCluster: z.boolean().optional() }).optional(),
+        tags: z.any().optional(),
+      })
+      .strict(),
     async (a) => {
       if (!clients.aks?.createCluster) throw new Error("AKS client not configured");
       const tags = coerceTags(a.tags);
@@ -370,7 +366,7 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
         kubernetesVersion: a.kubernetesVersion,
         agentPoolProfiles: a.agentPoolProfiles as any,
         apiServerAccessProfile: a.apiServerAccessProfile,
-        tags
+        tags,
       });
     }
   );
@@ -378,12 +374,7 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
   const enable_aks_monitoring = wrapCreate(
     n("enable_aks_monitoring"),
     "Enable Container Insights for an AKS cluster (LAW link).",
-    z.object({
-      resourceGroupName: z.string(),
-      clusterName: z.string(),
-      workspaceResourceGroup: z.string(),
-      workspaceName: z.string()
-    }).strict(),
+    z.object({ resourceGroupName: z.string(), clusterName: z.string(), workspaceResourceGroup: z.string(), workspaceName: z.string() }).strict(),
     async (a) => {
       if (!clients.aks?.enableMonitoring) throw new Error("AKS monitoring not configured");
       return clients.aks.enableMonitoring(a);
@@ -400,31 +391,53 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
     }
   );
 
-  // export all, wrapped with governance if provided
-  const all = [
+  // ──────────────────────────────────────────────────────────────
+  // Scans (ATO-enriched)
+  // ──────────────────────────────────────────────────────────────
+  const scans = makeAzureScanTools(opts);
+
+  const all: ToolDef[] = [
     // RG
-    create_rg, get_rg,
+    create_rg,
+    get_rg,
 
     // Plan
-    create_plan, get_plan,
+    create_plan,
+    get_plan,
 
     // Web
-    create_web, get_web, enable_msi, apply_settings,
+    create_web,
+    get_web,
+    enable_msi,
+    apply_settings,
 
     // KV
-    create_kv, get_kv,
+    create_kv,
+    get_kv,
 
     // Storage
-    create_sa, get_sa,
+    create_sa,
+    get_sa,
 
     // LAW
-    create_law, get_law,
+    create_law,
+    get_law,
 
     // Net
-    create_vnet, get_vnet, create_subnet, get_subnet, create_pe, get_pe,
+    create_vnet,
+    get_vnet,
+    create_subnet,
+    get_subnet,
+    create_pe,
+    get_pe,
 
     // AKS
-    create_aks, enable_aks_monitoring, get_aks
+    create_aks,
+    enable_aks_monitoring,
+    get_aks,
+
+    // Scans
+    ...scans,
   ];
 
   return withGovernanceAll(all, evaluateGovernance);

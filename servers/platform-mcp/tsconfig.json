@@ -2,7 +2,13 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "./dist",
-    "rootDir": "./src"
+    "rootDir": "./src",
+    "paths": {
+      "@platform/azure": ["../../packages/azure/src"],
+      "@platform/github": ["../../packages/github/src"],
+      "@platform/governance": ["../../packages/governance/src"],
+      "@platform/mcp-http": ["../../packages/mcp-http/src"]
+    }
   },
   "include": ["src", "../../../packages/mcp-http/src"]
 }
