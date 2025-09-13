@@ -21,6 +21,29 @@ type ResourceReport = {
 
 type GroupReport = Record<string, ResourceReport>; // key: resourceId or "rg/name"
 
+function renderPlanMarkdown(resourceKey: string, steps: { action: string; args: Record<string, any> }[]): string {
+  if (!steps?.length) return `**${resourceKey}** — no changes required.`;
+
+  const line = (s: any) => {
+    const a = String(s.action);
+    const x = s.args || {};
+    if (a === "webapps.setMinTls12")         return "Set minimum TLS to **1.2**";
+    if (a === "webapps.setHttpsOnly")        return "Enable **HTTPS-only**";
+    if (a === "webapps.setFtpsDisabled")     return "Disable **FTPS**";
+    if (a === "webapps.enableMsi")           return "Enable **system-assigned identity**";
+    if (a === "monitor.enableDiagnostics")   return "Enable **diagnostic settings** to Log Analytics";
+    if (a === "plans.setSku")                return `Set plan SKU to **${x.sku ?? "P1v3"}**`;
+    if (a === "plans.setCapacity")           return `Set worker count to **${x.capacity ?? 2}**`;
+    if (a === "plans.setZoneRedundant")      return "Enable **zone redundancy**";
+    return a; // fallback
+  };
+
+  return [
+    `**${resourceKey}**`,
+    ...steps.map((s, i) => `  ${i + 1}. ${line(s)}`)
+  ].join("\n");
+}
+
 function dedupeSteps(steps: PlanStep[]): PlanStep[] {
   const seen = new Set<string>();
   const out: PlanStep[] = [];
@@ -196,16 +219,30 @@ export function makeAzureRemediationTools(opts: MakeAzureToolsOptions & { namesp
         const steps = planFromWebAppFindings(findings || [], a.resourceGroupName, a.name, a.defaults);
         const key = `${a.resourceGroupName}/webapp/${a.name}`;
 
+        // 2) In remediate_webapp_baseline handler, dryRun branch:
         if (a.dryRun) {
+          const key = `${a.resourceGroupName}/webapp/${a.name}`;
           const report: GroupReport = { [key]: { plannedSteps: steps.length, suggestions: suggestNextStepsForWebApp(steps) } };
-          return { content: [ ...mjson({ status: "plan", steps, count: steps.length, report }), ...mtext(formatTextSummary("webapp-remediate-plan", "default", { total: steps.length, bySeverity: {} })) ] };
+          const preview = renderPlanMarkdown(key, steps);
+          return {
+            content: [
+              {
+                type: "json", json: {
+                  status: "plan", steps, count: steps.length, report, nextActions: [
+                    `Call platform.remediate_webapp_baseline with {"resourceGroupName":"${a.resourceGroupName}","name":"${a.name}","dryRun":false}`,
+                  ]
+                }
+              },
+              { type: "text", text: `### Remediation plan (web app)\n${preview}\n\nReply “apply webapp **${a.name}** now” to execute.` }
+            ]
+          };
         }
 
         const results: any[] = [];
         for (const s of steps) results.push(await applyWebStep(clients, s));
         const sum = summarizeResults(results);
         const report: GroupReport = { [key]: { plannedSteps: steps.length, applied: sum.applied, failed: sum.failed, errors: sum.errors, suggestions: suggestNextStepsForWebApp(steps, results) } };
-        return { content: [ ...mjson({ status: "done", results, report }), ...mtext(formatTextSummary("webapp-remediate", "default", { total: steps.length, bySeverity: {} })) ] };
+        return { content: [...mjson({ status: "done", results, report }), ...mtext(formatTextSummary("webapp-remediate", "default", { total: steps.length, bySeverity: {} }))] };
       } catch (e: any) {
         return { content: mjson(normalizeAzureError(e)), isError: true } as any;
       }
@@ -242,15 +279,28 @@ export function makeAzureRemediationTools(opts: MakeAzureToolsOptions & { namesp
         const key = `${a.resourceGroupName}/plan/${a.name}`;
 
         if (a.dryRun) {
+          const key = `${a.resourceGroupName}/plan/${a.name}`;
           const report: GroupReport = { [key]: { plannedSteps: steps.length, suggestions: suggestNextStepsForPlan(steps) } };
-          return { content: [ ...mjson({ status: "plan", steps, count: steps.length, report }), ...mtext(formatTextSummary("appplan-remediate-plan", "default", { total: steps.length, bySeverity: {} })) ] };
+          const preview = renderPlanMarkdown(key, steps);
+          return {
+            content: [
+              {
+                type: "json", json: {
+                  status: "plan", steps, count: steps.length, report, nextActions: [
+                    `Call platform.remediate_appplan_baseline with {"resourceGroupName":"${a.resourceGroupName}","name":"${a.name}","dryRun":false}`,
+                  ]
+                }
+              },
+              { type: "text", text: `### Remediation plan (app service plan)\n${preview}\n\nReply “apply plan **${a.name}** now” to execute.` }
+            ]
+          };
         }
 
         const results: any[] = [];
         for (const s of steps) results.push(await applyPlanStep(clients, s));
         const sum = summarizeResults(results);
         const report: GroupReport = { [key]: { plannedSteps: steps.length, applied: sum.applied, failed: sum.failed, errors: sum.errors, suggestions: suggestNextStepsForPlan(steps, results) } };
-        return { content: [ ...mjson({ status: "done", results, report }), ...mtext(formatTextSummary("appplan-remediate", "default", { total: steps.length, bySeverity: {} })) ] };
+        return { content: [...mjson({ status: "done", results, report }), ...mtext(formatTextSummary("appplan-remediate", "default", { total: steps.length, bySeverity: {} }))] };
       } catch (e: any) {
         return { content: mjson(normalizeAzureError(e)), isError: true } as any;
       }
@@ -271,13 +321,13 @@ export function makeAzureRemediationTools(opts: MakeAzureToolsOptions & { namesp
       try {
         const SAFE_DEFAULT_CODES = new Set([
           // webapp
-          "APP_TLS_MIN_BELOW_1_2","APP_HTTPS_ONLY_DISABLED","APP_FTPS_NOT_DISABLED","APP_MSI_DISABLED","APP_DIAG_NO_LAW",
+          "APP_TLS_MIN_BELOW_1_2", "APP_HTTPS_ONLY_DISABLED", "APP_FTPS_NOT_DISABLED", "APP_MSI_DISABLED", "APP_DIAG_NO_LAW",
           // plan
-          "PLAN_SKU_IS_FREE","PLAN_WORKER_COUNT_TOO_LOW","PLAN_ZONE_REDUNDANCY_DISABLED"
+          "PLAN_SKU_IS_FREE", "PLAN_WORKER_COUNT_TOO_LOW", "PLAN_ZONE_REDUNDANCY_DISABLED"
         ]);
         const allow = new Set((a.codes && a.codes.length ? a.codes : Array.from(SAFE_DEFAULT_CODES)).map((c: string) => c.toUpperCase()));
 
-        const byResource = new Map<string, { kind: "webapp"|"appplan"; name: string; steps: PlanStep[] }>();
+        const byResource = new Map<string, { kind: "webapp" | "appplan"; name: string; steps: PlanStep[] }>();
 
         for (const f of a.findings as any[]) {
           const code = String(f.code).toUpperCase();
@@ -309,8 +359,14 @@ export function makeAzureRemediationTools(opts: MakeAzureToolsOptions & { namesp
           const steps = entry.steps;
           plans[key] = steps;
           if (a.dryRun) {
-            report[key] = { plannedSteps: steps.length, suggestions: entry.kind === "webapp" ? suggestNextStepsForWebApp(steps) : suggestNextStepsForPlan(steps) };
-            continue;
+            const sections = Object.entries(plans).map(([k, steps]) => renderPlanMarkdown(k, steps));
+            const md = `### Remediation plan (resource group: ${a.resourceGroupName})\n` + sections.join("\n\n");
+            return {
+              content: [
+                { type: "json", json: { status: "plan", resourceGroupName: a.resourceGroupName, plans, report } },
+                { type: "text", text: md + `\n\nReply “apply RG **${a.resourceGroupName}** plan” to execute.` }
+              ]
+            };
           }
           const out: any[] = [];
           for (const s of steps) {
@@ -321,7 +377,7 @@ export function makeAzureRemediationTools(opts: MakeAzureToolsOptions & { namesp
           report[key] = { plannedSteps: steps.length, applied: sum.applied, failed: sum.failed, errors: sum.errors, suggestions: entry.kind === "webapp" ? suggestNextStepsForWebApp(steps, out) : suggestNextStepsForPlan(steps, out) };
         }
 
-        return { content: [ ...mjson({ status: a.dryRun ? "plan" : "done", resourceGroupName: a.resourceGroupName, plans: a.dryRun ? plans : undefined, results: a.dryRun ? undefined : results, report }), ...mtext(formatTextSummary("rg-remediate", "default", scanSummary([]))) ] };
+        return { content: [...mjson({ status: a.dryRun ? "plan" : "done", resourceGroupName: a.resourceGroupName, plans: a.dryRun ? plans : undefined, results: a.dryRun ? undefined : results, report }), ...mtext(formatTextSummary("rg-remediate", "default", scanSummary([])))] };
       } catch (e: any) {
         return { content: mjson(normalizeAzureError(e)), isError: true } as any;
       }

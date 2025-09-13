@@ -1,23 +1,21 @@
 {
-  "name": "supervisor-api",
+  "name": "supervisor-chat",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx src/index.ts",
-    "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js"
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 5174"
   },
   "dependencies": {
-    "dotenv": "^16.4.5",
-    "express": "^4.19.2",
-    "node-fetch": "^3.3.2",
-    "openai": "^4.104.0",
-    "zod": "^3.23.8",
-    "mcp-http": "workspace:*"
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
   },
   "devDependencies": {
-    "tsx": "^4.19.1",
-    "typescript": "^5.5.4"
+    "vite": "^5.4.0",
+    "typescript": "^5.5.4",
+    "@types/react": "^18.2.66",
+    "@types/react-dom": "^18.2.23"
   }
 }

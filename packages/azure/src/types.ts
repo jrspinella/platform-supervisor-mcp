@@ -9,6 +9,8 @@ export interface AppServicePlansClient {
   create(rg: string, name: string, location: string, sku: any, tags?: Record<string, string>): Promise<any>;
   get(rg: string, name: string): Promise<any>;
   listByResourceGroup?(rg: string): Promise<any[]>;
+  /** Optional update helper; may internally call beginCreateOrUpdateAndWait */
+  update?(rg: string, name: string, patch: any): Promise<any>;
 }
 
 export interface WebAppsClient {
@@ -19,12 +21,15 @@ export interface WebAppsClient {
     appServicePlanName: string;
     httpsOnly?: boolean;
     linuxFxVersion?: string;
-    minimumTlsVersion?: "1.0" | "1.1" | "1.2";
+    minimumTlsVersion?: "1.0" | "1.1" | "1.2" | "1.3";
     ftpsState?: "AllAllowed" | "FtpsOnly" | "Disabled";
     tags?: Record<string, string>;
   }): Promise<any>;
   get(rg: string, name: string): Promise<any>;
   getConfiguration?(rg: string, name: string): Promise<any>;
+  /** Optional patch helpers (may be implemented via createOrUpdate internally) */
+  update?(rg: string, name: string, patch: any): Promise<any>;
+  updateConfiguration?(rg: string, name: string, patch: any): Promise<any>;
   enableSystemAssignedIdentity(rg: string, name: string): Promise<any>;
   setAppSettings(rg: string, name: string, kv: Array<{ name: string; value: string }>): Promise<any>;
   listByResourceGroup?(rg: string): Promise<any[]>;
@@ -56,7 +61,7 @@ export interface StorageAccountsClient {
       | "Standard_RAGRS"
       | "Standard_ZRS"
       | "Premium_LRS";
-  kind: "StorageV2" | "BlobStorage" | "BlockBlobStorage" | "FileStorage" | "Storage";
+    kind: "StorageV2" | "BlobStorage" | "BlockBlobStorage" | "FileStorage" | "Storage";
     enableHttpsTrafficOnly?: boolean;
     tags?: Record<string, string>;
   }): Promise<any>;
@@ -93,7 +98,7 @@ export interface NetworksClient {
     name: string;
     addressPrefix: string;
     serviceEndpoints?: string[];
-    delegations?: Array<{ serviceName: string }>; // minimal
+    delegations?: Array<{ serviceName: string }>;
     privateEndpointNetworkPolicies?: "Enabled" | "Disabled";
     tags?: Record<string, string>;
   }): Promise<any>;
@@ -117,6 +122,8 @@ export interface NetworksClient {
 export interface MonitorClient {
   diagnosticSettings?: {
     list?: (resourceUri: string) => Promise<any[]>;
+    /** Optional — if present, remediation can enable LAW routing */
+    createOrUpdate?: (resourceUri: string, nameOrParams: any, maybeParams?: any) => Promise<any>;
   };
 }
 
@@ -132,7 +139,6 @@ export interface AksClient {
 }
 
 export interface DeploymentsClient {
-  /** RG-scope deployment */
   deployToResourceGroup(
     rg: string,
     deploymentName: string,
@@ -143,7 +149,6 @@ export interface DeploymentsClient {
     },
     opts?: { whatIf?: boolean }
   ): Promise<any>;
-  /** Subscription-scope deployment (location required) */
   deployToSubscription(
     deploymentName: string,
     properties: {
@@ -154,7 +159,6 @@ export interface DeploymentsClient {
     },
     opts?: { whatIf?: boolean }
   ): Promise<any>;
-  /** Management group-scope deployment (location required) */
   deployToManagementGroup(
     managementGroupId: string,
     deploymentName: string,

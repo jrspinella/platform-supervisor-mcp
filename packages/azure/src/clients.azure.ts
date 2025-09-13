@@ -8,7 +8,7 @@ import { OperationalInsightsManagementClient } from "@azure/arm-operationalinsig
 import { NetworkManagementClient } from "@azure/arm-network";
 import { MonitorClient as AzureMonitorClient } from "@azure/arm-monitor";
 import { ContainerServiceClient } from "@azure/arm-containerservice";
-
+import { ensureAzureCloudEnv, armClientOptions } from "./clouds.js";
 import type {
   AzureClients,
   AppServicePlansClient,
@@ -50,14 +50,18 @@ async function toArray<T = any>(iter: any): Promise<T[]> {
 }
 
 export function createAzureSdkClients(cfg?: AzureSdkConfig): AzureClients {
+  const cloud = ensureAzureCloudEnv();
   const subscriptionId = subIdOrThrow(cfg);
-  const credential = cfg?.credential ?? new DefaultAzureCredential();
+  const credential = cfg?.credential ?? new DefaultAzureCredential({ authorityHost: cloud.authorityHost });
   const retryOptions = {
     maxRetries: cfg?.retry?.maxRetries ?? 5,
     retryDelayInMs: cfg?.retry?.retryDelayInMs ?? 500,
     maxRetryDelayInMs: cfg?.retry?.maxRetryDelayInMs ?? 4000,
   } as const;
+
+  const base = armClientOptions();
   const options: any = {
+    ...base,
     userAgentOptions: cfg?.userAgentPrefix ? { userAgentPrefix: cfg.userAgentPrefix } : undefined,
     retryOptions,
   };
@@ -135,6 +139,26 @@ export function createAzureSdkClients(cfg?: AzureSdkConfig): AzureClients {
     async listByResourceGroup(rg) {
       return toArray(app.appServicePlans.listByResourceGroup(rg));
     },
+    async update(rg, name, patch) {
+      // Implemented via createOrUpdate to ensure compatibility across SDK versions
+      const cur: any = await app.appServicePlans.get(rg, name);
+      const mergedSku =
+        typeof patch?.sku === "string"
+          ? { ...(cur?.sku ?? {}), name: patch.sku }
+          : { ...(cur?.sku ?? {}), ...(patch?.sku ?? {}) };
+
+      if (typeof patch?.capacity === "number") {
+        (mergedSku as any).capacity = patch.capacity;
+      }
+
+      const body: any = {
+        location: cur?.location,
+        tags: patch?.tags ?? cur?.tags,
+        sku: mergedSku,
+        zoneRedundant: typeof patch?.zoneRedundant === "boolean" ? patch.zoneRedundant : (cur as any)?.zoneRedundant,
+      };
+      return app.appServicePlans.beginCreateOrUpdateAndWait(rg, name, body);
+    },
   };
 
   const webApps: WebAppsClient = {
@@ -159,6 +183,35 @@ export function createAzureSdkClients(cfg?: AzureSdkConfig): AzureClients {
     },
     async getConfiguration(rg, name) {
       return app.webApps.getConfiguration(rg, name);
+    },
+    async update(rg, name, patch) {
+      // Implemented via createOrUpdate to be universally available
+      const cur: any = await app.webApps.get(rg, name);
+      const site: any = {
+        location: cur?.location,
+        serverFarmId: cur?.serverFarmId,
+        httpsOnly: typeof patch?.httpsOnly === "boolean"
+          ? patch.httpsOnly
+          : cur?.httpsOnly ?? cur?.properties?.httpsOnly,
+        siteConfig: {
+          ...(cur?.siteConfig || {}),
+          // Accept either minTlsVersion or minimumTlsVersion in patch
+          minTlsVersion:
+            patch?.minTlsVersion ??
+            patch?.minimumTlsVersion ??
+            cur?.siteConfig?.minTlsVersion ??
+            cur?.properties?.minimumTlsVersion,
+          ftpsState: patch?.ftpsState ?? cur?.siteConfig?.ftpsState,
+          linuxFxVersion: patch?.linuxFxVersion ?? cur?.siteConfig?.linuxFxVersion,
+        },
+        identity: patch?.identity ?? cur?.identity,
+        tags: patch?.tags ?? cur?.tags,
+        kind: cur?.kind || "app,linux",
+      };
+      return app.webApps.beginCreateOrUpdateAndWait(rg, name, site);
+    },
+    async updateConfiguration(rg, name, patch) {
+      return (app.webApps as any).updateConfiguration(rg, name, patch);
     },
     async enableSystemAssignedIdentity(rg, name) {
       return app.webApps.beginCreateOrUpdateAndWait(rg, name, { identity: { type: "SystemAssigned" } } as any);
@@ -302,6 +355,16 @@ export function createAzureSdkClients(cfg?: AzureSdkConfig): AzureClients {
       async list(resourceUri: string) {
         const result = await mon.diagnosticSettings.list(resourceUri);
         return toArray(result.value);
+      },
+      async createOrUpdate(resourceUri: string, nameOrParams: any, maybeParams?: any) {
+        // Support both SDK shapes:
+        // - createOrUpdate(resourceUri, name, params)
+        // - createOrUpdate(resourceUri, params)
+        const ds: any = (mon as any).diagnosticSettings;
+        if (maybeParams !== undefined) {
+          return ds.createOrUpdate(resourceUri, nameOrParams, maybeParams);
+        }
+        return ds.createOrUpdate(resourceUri, nameOrParams);
       },
     },
   };

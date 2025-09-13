@@ -1,164 +1,427 @@
-import 'dotenv/config';
-import fetch from 'node-fetch';
-import pino from 'pino';
-import { z } from 'zod';
-import readline from 'node:readline';
-import { bold, cyan, gray, green, magenta, red, yellow } from 'kleur/colors';
-import { chat, configuredFromEnv } from './lib/aoai.js';
+// apps/supervisor/src/index.ts
+/**
+ * Supervisor CLI (interactive) — with "Fix now?" remediation flow
+ * - Routes natural language via Router MCP (nl.route)
+ * - Calls Platform MCP tools
+ * - If a scan tool returns findings, offers to remediate:
+ *    - web app:  platform.remediate_webapp_baseline
+ *    - app plan: platform.remediate_appplan_baseline
+ *    - RG / workload scans: lets you pick a Web App or App Plan to fix
+ *
+ * No external deps. Requires Node 18+ (global fetch + readline/promises).
+ */
 
-const log = pino({ name: 'supervisor' });
+import { createInterface } from "node:readline/promises";
+import { stdin as input, stdout as output } from "node:process";
 
-function normalizeRpcUrl(u: string, def: string): string {
-  const url = (u || def).replace(/\/$/, '');
-  return url.endsWith('/rpc') ? url : `${url}/rpc`;
+type Json = any;
+
+const ROUTER_RPC = process.env.ROUTER_RPC || "http://127.0.0.1:8700/rpc";
+const PLATFORM_RPC = process.env.PLATFORM_RPC || "http://127.0.0.1:8721/rpc";
+
+const hr = () => console.log("".padEnd(80, "─"));
+
+function printHeader() {
+  console.log("Supervisor CLI — interactive mode");
+  console.log(`Router:   ${ROUTER_RPC}`);
+  console.log(`Platform: ${PLATFORM_RPC}`);
+  console.log("\nTips: type an instruction (e.g., “create a web app…”)");
+  console.log("      or use commands: /catalog, /policy, /reload, /route, /call, /quit\n");
 }
 
-const ROUTER_RPC = normalizeRpcUrl(process.env.ROUTER_RPC || '', 'http://127.0.0.1:8700/rpc');
-const PLATFORM_RPC = normalizeRpcUrl(process.env.PLATFORM_RPC || '', 'http://127.0.0.1:8721/rpc');
-const CONFIRM_APPLY = String(process.env.CONFIRM_APPLY || 'true').toLowerCase() !== 'false';
-
-// ── JSON-RPC helpers ──────────────────────────────────────────
-async function rpc(url: string, method: string, params?: any) {
+async function jsonRpc(url: string, method: string, params: Record<string, any> = {}) {
+  const body = { jsonrpc: "2.0", id: Date.now(), method, params };
   const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params })
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
   });
-  const raw = await res.text();
-  let data: any;
+  const text = await res.text();
   try {
-    data = JSON.parse(raw);
-  } catch {
-    throw new Error(`RPC ${url} returned non-JSON (first 120 chars): ${raw.slice(0, 120)}`);
-  }
-  if (data?.error) throw new Error(`${method} → ${data.error.message}`);
-  return data?.result;
-}
-
-// ── Router schema (loose) ─────────────────────────────────────
-const RouteSchema = z.object({
-  tool: z.string(),
-  args: z.record(z.any()).default({}),
-  rationale: z.string().optional(),
-  confirmations: z.array(z.string()).optional(),
-});
-
-// ── CLI utils ─────────────────────────────────────────────────
-function prompt(q: string): Promise<string> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise(resolve => rl.question(q, ans => { rl.close(); resolve(ans); }));
-}
-
-function printResult(result: any) {
-  const blocks = Array.isArray(result?.content) ? result.content : [];
-  for (const b of blocks) {
-    if (b.type === 'text') {
-      process.stdout.write(`\n${magenta('— text —')}\n${b.text}\n`);
-    } else if (b.type === 'json') {
-      process.stdout.write(`\n${cyan('— json —')}\n${JSON.stringify(b.json, null, 2)}\n`);
+    const json = JSON.parse(text);
+    if (json.error) throw Object.assign(new Error(json.error?.message || "RPC Error"), { rpc: json });
+    return json.result;
+  } catch (e: any) {
+    // Helpful when HTML comes back (e.g., wrong port)
+    if (text?.startsWith("<!DOCTYPE")) {
+      throw new Error(`Received HTML from ${url}. Are you pointing at the right RPC?`);
     }
+    throw e;
   }
-  if (result?.isError) process.stdout.write(`\n${red('✖ error')}\n`);
 }
 
-// ── Fallback NL → tool using AOAI locally (if router is down) ─
-const nlSystem = [
-  'You are a supervisor agent for a Platform Engineering MCP. Given an instruction and a tool catalog,',
-  'choose the single best tool and args. If required args are missing, return a list of clarifying questions.',
-  'Output strict JSON with shape {tool, args, questions?: string[], rationale?: string}.',
-].join('\n');
-
-async function planWithAoai(instruction: string, catalog: Array<{ name: string; description: string }>) {
-  const cfg = configuredFromEnv();
-  if (!cfg) throw new Error('AOAI not configured and router unavailable. Set AZURE_OPENAI_* or start router-mcp.');
-  const user = JSON.stringify({ instruction, catalog }, null, 2);
-  const out = await chat(cfg, [ { role: 'system', content: nlSystem }, { role: 'user', content: user } ], { max_tokens: 500 });
-  try { return JSON.parse(out); } catch { throw new Error('planner returned non-JSON'); }
+async function routerRoute(instruction: string) {
+  console.log(`Router RPC: ${ROUTER_RPC}`);
+  console.log(`Platform RPC: ${PLATFORM_RPC}`);
+  return jsonRpc(ROUTER_RPC, "nl.route", { instruction });
 }
 
-// Minimal heuristic fallback if both Router and AOAI planners fail
-function naiveLocalPlan(text: string): { tool: string; args: Record<string, any>; rationale: string } | null {
-  const s = text.trim();
-  // create resource group rg-name in <region>
-  const m1 = /create\s+(?:a\s+)?resource\s+group\s+([A-Za-z0-9_-]+)/i.exec(s);
-  const m1loc = /in\s+(?:region\s+)?([A-Za-z0-9-]+)/i.exec(s);
-  if (m1) {
-    return { tool: 'platform.create_resource_group', args: { name: m1[1], location: m1loc?.[1] || 'eastus' }, rationale: 'heuristic: create_resource_group' };
-  }
+async function platformCallTool(name: string, args: Record<string, any>) {
+  return jsonRpc(PLATFORM_RPC, "tools.call", { name, arguments: args || {} });
+}
+
+async function platformList() {
+  return jsonRpc(PLATFORM_RPC, "tools.list", {});
+}
+
+async function platformPolicyDump() {
+  return jsonRpc(PLATFORM_RPC, "tools.call", { name: "platform.policy_dump", arguments: {} });
+}
+
+async function platformPolicyReload(dir?: string) {
+  return jsonRpc(PLATFORM_RPC, "tools.call", {
+    name: "platform.policy_reload",
+    arguments: dir ? { dir } : {},
+  });
+}
+
+// ──────────────────────────────────────────────────────────────
+// Content helpers
+// ──────────────────────────────────────────────────────────────
+function firstJsonContent(result: any): any | null {
+  const items: Array<{ type: string; json?: any; text?: string }> = result?.content || [];
+  for (const c of items) if (c?.type === "json") return c.json;
+  // Fallback: if the content itself is JSON
+  if (result && typeof result === "object" && !Array.isArray(result) && "status" in result) return result;
   return null;
 }
 
-// ── Discover tools from platform (for AOAI fallback display) ─
-async function listPlatformTools() {
-  const r = await rpc(PLATFORM_RPC, 'tools.list', {});
-  return (r || []).map((t: any) => ({ name: t.name, description: t.description }));
+function allTextContent(result: any): string[] {
+  const items: Array<{ type: string; text?: string }> = result?.content || [];
+  return items.filter((c) => c?.type === "text" && c.text).map((c) => String(c.text));
 }
 
-// ── Main REPL ─────────────────────────────────────────────────
-async function main() {
-  const initial = process.argv.slice(2).join(' ').trim();
-  process.stdout.write(gray(`Router RPC: ${ROUTER_RPC}\nPlatform RPC: ${PLATFORM_RPC}\n`));
+function printToolResult(result: any) {
+  const j = firstJsonContent(result);
+  const ts = allTextContent(result);
 
-  let instruction = initial || (await prompt(bold('> What do you want to do? ')));
-  while (instruction) {
-    try {
-      // 1) Attempt router → plan
-      let plan: z.infer<typeof RouteSchema> | null = null;
-      try {
-        const routed = await rpc(ROUTER_RPC, 'nl.route', { instruction, text: instruction });
-        plan = RouteSchema.parse(routed);
-        process.stdout.write(`\n${green('→ Routed to')} ${bold(plan.tool)}${plan.rationale ? ` — ${plan.rationale}` : ''}\n`);
-      } catch (e: any) {
-        log.warn({ err: e?.message }, 'router route failed; trying AOAI fallback');
-        const catalog = await listPlatformTools();
-        try {
-          const p = await planWithAoai(instruction, catalog);
-          plan = RouteSchema.parse({ tool: p.tool, args: p.args || {}, rationale: p.rationale, confirmations: p.questions });
-          process.stdout.write(`\n${yellow('→ Planned via AOAI')} ${bold(plan.tool)}${plan.rationale ? ` — ${plan.rationale}` : ''}\n`);
-        } catch (e2: any) {
-          const naive = naiveLocalPlan(instruction);
-          if (naive) {
-            plan = RouteSchema.parse({ tool: naive.tool, args: naive.args, rationale: naive.rationale });
-            process.stdout.write(`\n${yellow('→ Heuristic plan')} ${bold(plan.tool)} — ${plan.rationale}\n`);
-          } else {
-            throw e2;
-          }
-        }
-      }
-
-      // 2) Ask any clarifying questions returned
-      if (plan.confirmations && plan.confirmations.length) {
-        process.stdout.write(gray('\nMissing info:'));
-        for (const q of plan.confirmations) {
-          const a = await prompt(`  - ${q} `);
-          const m = /^([a-zA-Z0-9_\.\-]+)\s*[:=]/.exec(q);
-          if (m) (plan.args as any)[m[1]] = a; else (plan.args as any)[q] = a;
-        }
-      }
-
-      process.stdout.write(`\n${bold('Args:')} ${gray(JSON.stringify(plan.args))}\n`);
-
-      // 3) Confirm
-      if (CONFIRM_APPLY) {
-        const ans = (await prompt(bold('\nProceed? (y/N) '))).trim().toLowerCase();
-        if (ans !== 'y' && ans !== 'yes') {
-          instruction = await prompt(bold('\n> Next instruction? '));
-          continue;
-        }
-      }
-
-      // 4) Execute via platform-mcp
-      const result = await rpc(PLATFORM_RPC, 'tools.call', { name: plan.tool, args: plan.args });
-      printResult(result);
-
-      // 5) Loop
-      instruction = await prompt(bold('\n> Next instruction? '));
-    } catch (e: any) {
-      process.stdout.write(`\n${red('✖ ' + (e?.message || String(e)))}\n`);
-      instruction = await prompt(bold('\n> Try another instruction? '));
+  if (j) {
+    console.log("┌─ JSON");
+    console.log(JSON.stringify(j, null, 2));
+    console.log("└────────");
+  }
+  if (ts?.length) {
+    for (const t of ts) {
+      console.log("┌─ TEXT");
+      console.log(t);
+      console.log("└────────");
     }
   }
-  process.stdout.write(gray('\nbye.\n'));
+  if (result?.isError) console.log("⛔ Error flag set on tool result");
 }
 
-main().catch(e => { log.error(e, 'fatal'); process.exit(1); });
+// ──────────────────────────────────────────────────────────────
+type Finding = {
+  code: string;
+  severity?: string;
+  suggest?: string;
+  controlIds?: string[];
+  meta?: Record<string, any>;
+};
+
+function extractFindingsFromToolResult(result: any): Finding[] {
+  const j = firstJsonContent(result);
+  const findings = j?.findings;
+  if (Array.isArray(findings)) return findings as Finding[];
+  return [];
+}
+
+function summarizeFindings(findings: Finding[]) {
+  const bySev = new Map<string, number>();
+  for (const f of findings) {
+    const s = (f.severity || "unknown").toLowerCase();
+    bySev.set(s, (bySev.get(s) || 0) + 1);
+  }
+  const order = ["high", "medium", "low", "info", "unknown"];
+  const parts = order
+    .map((k) => `${k}: ${bySev.get(k) || 0}`)
+    .concat(
+      [...bySev.keys()].filter((k) => !order.includes(k)).map((k) => `${k}: ${bySev.get(k) || 0}`)
+    );
+  return `Findings: ${findings.length}  —  ${parts.join("  ·  ")}`;
+}
+
+function filterFindingsForWebApp(findings: Finding[], rg: string, name: string) {
+  const n = String(name).toLowerCase();
+  return findings.filter((f) => {
+    const m = f.meta || {};
+    const w = (m.webAppName || m.siteName || m.name || "").toString().toLowerCase();
+    const rgOk = !m.resourceGroupName || String(m.resourceGroupName).toLowerCase() === String(rg).toLowerCase();
+    const looksWeb = f.code?.startsWith("APP_") || m.kind === "webapp";
+    return looksWeb && rgOk && (w ? w === n : true);
+  });
+}
+
+function filterFindingsForPlan(findings: Finding[], rg: string, name: string) {
+  const n = String(name).toLowerCase();
+  return findings.filter((f) => {
+    const m = f.meta || {};
+    const p = (m.appServicePlanName || m.planName || m.name || "").toString().toLowerCase();
+    const rgOk = !m.resourceGroupName || String(m.resourceGroupName).toLowerCase() === String(rg).toLowerCase();
+    const looksPlan = f.code?.startsWith("APPPLAN_") || m.kind === "appplan";
+    return looksPlan && rgOk && (p ? p === n : true);
+  });
+}
+
+// For RG/workload scans: group webapps + plans for selection
+function groupTargetableResources(findings: Finding[]) {
+  const webapps = new Map<string, { rg: string; name: string }>();
+  const plans = new Map<string, { rg: string; name: string }>();
+  for (const f of findings) {
+    const m = f.meta || {};
+    if (f.code?.startsWith("APP_") || m.kind === "webapp" || m.webAppName || m.siteName) {
+      const rg = String(m.resourceGroupName || "");
+      const name = String(m.webAppName || m.siteName || m.name || "");
+      if (rg && name) webapps.set(`${rg}/${name}`, { rg, name });
+    }
+    if (f.code?.startsWith("APPPLAN_") || m.kind === "appplan" || m.appServicePlanName) {
+      const rg = String(m.resourceGroupName || "");
+      const name = String(m.appServicePlanName || m.name || "");
+      if (rg && name) plans.set(`${rg}/${name}`, { rg, name });
+    }
+  }
+  return { webapps: [...webapps.values()], plans: [...plans.values()] };
+}
+
+// ──────────────────────────────────────────────────────────────
+// Prompts
+// ──────────────────────────────────────────────────────────────
+async function yesNo(rl: any, prompt: string, defNo = true): Promise<boolean> {
+  const ans = (await rl.question(`${prompt} ${defNo ? "[y/N]" : "[Y/n]"} `)).trim().toLowerCase();
+  if (!ans) return !defNo;
+  return ans === "y" || ans === "yes";
+}
+
+async function editJson(rl: any, initial: any): Promise<any> {
+  console.log("Current args:");
+  console.log(JSON.stringify(initial, null, 2));
+  const edited = await rl.question("Paste new JSON (or press Enter to keep): ");
+  if (!edited.trim()) return initial;
+  try {
+    return JSON.parse(edited);
+  } catch (e: any) {
+    console.log(`Invalid JSON: ${e?.message || e}`);
+    return initial;
+  }
+}
+
+async function chooseOne(rl: any, title: string, items: string[]): Promise<number> {
+  if (!items.length) return -1;
+  console.log(`\n${title}`);
+  items.forEach((it, i) => console.log(`  ${i + 1}. ${it}`));
+  for (;;) {
+    const ans = (await rl.question(`Choose 1-${items.length} (or Enter to cancel): `)).trim();
+    if (!ans) return -1;
+    const idx = Number(ans);
+    if (Number.isInteger(idx) && idx >= 1 && idx <= items.length) return idx - 1;
+    console.log("Invalid choice.");
+  }
+}
+
+// ──────────────────────────────────────────────────────────────
+// Remediation flows
+// ──────────────────────────────────────────────────────────────
+async function remediateWebApp(rl: any, args: { resourceGroupName?: string; rg?: string; name?: string; webapp?: string }, findings: Finding[]) {
+  const resourceGroupName = args.resourceGroupName || args.rg;
+  const name = args.name || args.webapp;
+  if (!resourceGroupName || !name) {
+    console.log("Cannot remediate: missing resourceGroupName or name.");
+    return;
+  }
+  const subset = filterFindingsForWebApp(findings, resourceGroupName, name);
+  if (!subset.length) {
+    console.log("No applicable Web App findings for this resource.");
+    return;
+  }
+
+  // LAW workspace id if needed
+  const needsDiag = subset.some((f) => f.code === "APP_DIAG_NO_LAW");
+  let lawWorkspaceId: string | undefined = process.env.LAW_WORKSPACE_ID;
+  if (needsDiag && !lawWorkspaceId) {
+    const ans = await rl.question("Enter LAW workspace resource ID for diagnostics (or Enter to skip diag): ");
+    lawWorkspaceId = ans.trim() || undefined;
+  }
+
+  const dryArgs = { resourceGroupName, name, findings: subset, dryRun: true as const, ...(lawWorkspaceId ? { lawWorkspaceId } : {}) };
+  console.log("\n→ Planning remediation: platform.remediate_webapp_baseline");
+  let res = await platformCallTool("platform.remediate_webapp_baseline", dryArgs);
+  printToolResult(res);
+
+  if (!(await yesNo(rl, "Apply fixes now?", true))) return;
+
+  const applyArgs = { ...dryArgs, dryRun: false as const };
+  console.log("\n→ Applying remediation: platform.remediate_webapp_baseline");
+  res = await platformCallTool("platform.remediate_webapp_baseline", applyArgs);
+  printToolResult(res);
+}
+
+async function remediateAppPlan(rl: any, args: { resourceGroupName?: string; rg?: string; name?: string; appServicePlanName?: string }, findings: Finding[]) {
+  const resourceGroupName = args.resourceGroupName || args.rg;
+  const name = args.name || args.appServicePlanName;
+  if (!resourceGroupName || !name) {
+    console.log("Cannot remediate: missing resourceGroupName or name.");
+    return;
+  }
+  const subset = filterFindingsForPlan(findings, resourceGroupName, name);
+  if (!subset.length) {
+    console.log("No applicable App Service Plan findings for this resource.");
+    return;
+  }
+
+  const targetSku = process.env.ASP_MIN_SKU || "P1v3";
+
+  // LAW workspace id if needed
+  const needsDiag = subset.some((f) => f.code === "APPPLAN_DIAG_NO_LAW");
+  let lawWorkspaceId: string | undefined = process.env.LAW_WORKSPACE_ID;
+  if (needsDiag && !lawWorkspaceId) {
+    const ans = await rl.question("Enter LAW workspace resource ID for diagnostics (or Enter to skip diag): ");
+    lawWorkspaceId = ans.trim() || undefined;
+  }
+
+  const dryArgs = {
+    resourceGroupName,
+    name,
+    findings: subset,
+    dryRun: true as const,
+    targetSku,
+    ...(lawWorkspaceId ? { lawWorkspaceId } : {}),
+  };
+  console.log("\n→ Planning remediation: platform.remediate_appplan_baseline");
+  let res = await platformCallTool("platform.remediate_appplan_baseline", dryArgs);
+  printToolResult(res);
+
+  if (!(await yesNo(rl, "Apply fixes now?", true))) return;
+
+  const applyArgs = { ...dryArgs, dryRun: false as const };
+  console.log("\n→ Applying remediation: platform.remediate_appplan_baseline");
+  res = await platformCallTool("platform.remediate_appplan_baseline", applyArgs);
+  printToolResult(res);
+}
+
+// For RG/workload scans: let user pick a target to remediate
+async function remediateFromAggregateScan(rl: any, findings: Finding[]) {
+  const groups = groupTargetableResources(findings);
+  const choices: string[] = [
+    ...groups.webapps.map((w) => `Web App: ${w.rg}/${w.name}`),
+    ...groups.plans.map((p) => `App Plan: ${p.rg}/${p.name}`),
+  ];
+  if (choices.length === 0) {
+    console.log("No Web Apps or App Service Plans found in findings to remediate.");
+    return;
+  }
+  const idx = await chooseOne(rl, "Select a resource to remediate:", choices);
+  if (idx < 0) return;
+
+  if (idx < groups.webapps.length) {
+    const pick = groups.webapps[idx];
+    await remediateWebApp(rl, { resourceGroupName: pick.rg, name: pick.name }, findings);
+  } else {
+    const pick = groups.plans[idx - groups.webapps.length];
+    await remediateAppPlan(rl, { resourceGroupName: pick.rg, name: pick.name }, findings);
+  }
+}
+
+// ──────────────────────────────────────────────────────────────
+// Main loop
+// ──────────────────────────────────────────────────────────────
+async function main() {
+  const rl = createInterface({ input, output });
+  printHeader();
+
+  // If an initial instruction was provided after `--`
+  const initial = process.argv.slice(2).join(" ").replace(/^--\s*/, "").trim();
+  let last = initial ? initial : "";
+
+  for (;;) {
+    const prompt = last ? `> ` : `> `;
+    const line = last || (await rl.question(prompt));
+    last = ""; // only use initial once
+
+    const s = line.trim();
+    if (!s) continue;
+
+    // Commands
+    if (s === "/quit" || s === "/exit") break;
+    if (s === "/catalog") {
+      const list = await platformList();
+      const names = (list?.map?.((t: any) => t?.name) || []).filter(Boolean);
+      console.log("\nTools:");
+      console.log(names.sort().join("\n"));
+      console.log("");
+      continue;
+    }
+    if (s === "/policy") {
+      const res = await platformPolicyDump();
+      printToolResult(res);
+      continue;
+    }
+    if (s.startsWith("/reload")) {
+      const dir = s.split(/\s+/)[1];
+      const res = await platformPolicyReload(dir);
+      printToolResult(res);
+      continue;
+    }
+    if (s.startsWith("/route ")) {
+      const msg = s.slice(7).trim();
+      const route = await routerRoute(msg);
+      console.log(JSON.stringify(route, null, 2));
+      continue;
+    }
+    if (s.startsWith("/call ")) {
+      try {
+        const payload = JSON.parse(s.slice(6));
+        const res = await platformCallTool(payload.name, payload.arguments || {});
+        printToolResult(res);
+      } catch (e: any) {
+        console.log("Usage: /call {\"name\":\"tool.name\",\"arguments\":{...}}");
+        console.log(e?.message || String(e));
+      }
+      continue;
+    }
+
+    // Route
+    const route = await routerRoute(s);
+    const tool = route?.tool;
+    const args = route?.args || {};
+    const rationale = route?.rationale;
+
+    console.log(`→ Routed to \`${tool}\` — ${rationale || "no rationale"}`);
+    console.log("→ Args:", JSON.stringify(args, null, 2));
+
+    const edit = await yesNo(rl, "Edit args before calling?", true);
+    const finalArgs = edit ? await editJson(rl, args) : args;
+
+    const proceed = await yesNo(rl, "Proceed?", false);
+    if (!proceed) continue;
+
+    // Call tool
+    const result = await platformCallTool(tool, finalArgs);
+    printToolResult(result);
+
+    // If scan tool, offer remediation
+    const findings = extractFindingsFromToolResult(result);
+    if (findings.length && /^platform\.scan_/.test(tool)) {
+      console.log("\n" + summarizeFindings(findings));
+
+      const fix = await yesNo(rl, "Fix now?", true);
+      if (!fix) continue;
+
+      if (tool === "platform.scan_webapp_baseline") {
+        await remediateWebApp(rl, finalArgs, findings);
+      } else if (tool === "platform.scan_appplan_baseline") {
+        await remediateAppPlan(rl, finalArgs, findings);
+      } else if (tool === "platform.scan_workload_baseline" || tool === "platform.scan_resource_group_baseline") {
+        await remediateFromAggregateScan(rl, findings);
+      } else {
+        console.log("No remediation flow wired for this scan tool.");
+      }
+    }
+  }
+
+  rl.close();
+}
+
+main().catch((e) => {
+  console.error(e?.stack || e);
+  process.exit(1);
+});

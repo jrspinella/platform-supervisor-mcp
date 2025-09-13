@@ -3,6 +3,7 @@ import type { MakeAzureToolsOptions } from "./types.js";
 import { wrapCreate, wrapGet, withGovernanceAll, coerceTags } from "./utils.js";
 import type { ToolDef } from "mcp-http";
 import { makeAzureScanTools } from "./tools/tools.scan.js";
+import { makeAzureRemediationTools } from "./tools/tools.remediation.js";
 
 export function makeAzureTools(opts: MakeAzureToolsOptions) {
   const { clients, evaluateGovernance, namespace = "azure." } = opts;
@@ -395,6 +396,7 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
   // Scans (ATO-enriched)
   // ──────────────────────────────────────────────────────────────
   const scans = makeAzureScanTools(opts);
+  const remediations = makeAzureRemediationTools(opts);
 
   const all: ToolDef[] = [
     // RG
@@ -438,6 +440,9 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
 
     // Scans
     ...scans,
+
+    // Remediations
+    ...remediations,
   ];
 
   return withGovernanceAll(all, evaluateGovernance);

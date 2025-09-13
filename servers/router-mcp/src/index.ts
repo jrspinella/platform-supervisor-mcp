@@ -1,161 +1,229 @@
-import 'dotenv/config';
-import http from 'node:http';
-import { URL } from 'node:url';
-import { z } from 'zod';
-import pino from 'pino';
-import fetch from 'node-fetch';
-import { chat, configuredFromEnv } from './lib/aoai.js';
+// servers/router-mcp/src/index.ts — minimal NL router with arg mapping + default profile injection
+import express from "express";
+import "dotenv/config";
 
-const log = pino({ name: 'router-mcp' });
-const PORT = Number(process.env.PORT || 8700);
+const app = express();
+app.use(express.json());
 
-function normalizeRpcUrl(u: string, def: string): string {
-  const url = (u || def).replace(/\/$/, '');
-  return url.endsWith('/rpc') ? url : `${url}/rpc`;
-}
-const PLATFORM_RPC = normalizeRpcUrl(process.env.PLATFORM_RPC || '', 'http://127.0.0.1:8721/rpc');
+const ATO_DEFAULT = (process.env.ATO_PROFILE || "default").trim();
 
-// ── JSON-RPC helpers ──────────────────────────────────────────
-async function rpc(url: string, method: string, params?: any) {
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params })
-  });
-  const raw = await res.text();
-  try { return JSON.parse(raw).result; } catch { throw new Error(`RPC ${url} non-JSON: ${raw.slice(0,120)}`); }
-}
+// ── Regex helpers ──────────────────────────────────────────────────────────────
+const RE = {
+  // intents
+  scan: /\bscan\b/i,
+  create: /\bcreate\b/i,
 
-// ── Catalog cache ─────────────────────────────────────────────
-let catalog: Array<{ name: string; description?: string; inputSchema?: any }> = [];
-async function refreshCatalog() {
-  const res = await rpc(PLATFORM_RPC, 'tools.list', {});
-  catalog = (res || []).map((t: any) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }));
-  log.info({ count: catalog.length }, 'catalog refreshed');
-}
+  // resource kinds
+  webappWord: /\b(web\s*app|webapp)\b/i,
+  planWord: /\b(app\s*service\s*plan|plan)\b/i,
+  rgWord: /\b(resource\s*group|rg)\b/i,
 
-function requiredArgsFor(toolName: string): string[] {
-  const t = catalog.find(c => c.name === toolName);
-  const schema = t?.inputSchema;
-  // Accept JSON Schema or zod-ish dumps; best-effort: look for `required` array
-  if (schema && Array.isArray(schema.required)) return schema.required as string[];
-  return [];
-}
+  // names
+  webappName: /\b(?:web\s*app|webapp)\s+([a-z0-9-]+)/i,
+  planName: /\b(?:app\s*service\s*plan|plan)\s+([a-z0-9-]+)/i,
+  rgName: /\bresource\s*group\s+([a-z0-9-]+)/i,
 
-// ── Planner (AOAI) ───────────────────────────────────────────
-const nlSystem = [
-  'You are a routing agent for a Platform Engineering MCP. Given an instruction and a list of tools,',
-  'choose the single best tool and arguments. If any required args are missing, include questions.',
-  'Return STRICT JSON: { tool: string, args: object, questions?: string[], rationale?: string }.',
-  'Prefer tools with the prefix platform.* (aliases exist for azure.* and github.*).'
-].join('\n');
+  // generic captures
+  location: /\b(location|in)\s+([a-z0-9-]+)\b/i,
+  tagsObj: /\btags\s*[:=]\s*(\{[^}]*\})/i,
+  nameField: /\bname\s*[:=]\s*([A-Za-z0-9-_]+)/i,
+  rgLoose: /\brg[-\w]+\b/i,
+};
 
-async function planWithAoai(instruction: string) {
-  const cfg = configuredFromEnv();
-  if (!cfg) throw new Error('Azure OpenAI not configured.');
-  const summaryCatalog = catalog.map(c => ({ name: c.name, description: c.description })).slice(0, 400);
-  const user = JSON.stringify({ instruction, catalog: summaryCatalog }, null, 2);
-  const out = await chat(cfg, [ { role: 'system', content: nlSystem }, { role: 'user', content: user } ], { max_tokens: 600 });
-  try { return JSON.parse(out); } catch { throw new Error('planner returned non-JSON'); }
+// ── Extractors ────────────────────────────────────────────────────────────────
+function extractRgCreate(text: string) {
+  // name from "name: x", or "rg-foo" token after create rg, or "resource group <name>"
+  const name =
+    RE.nameField.exec(text)?.[1] ||
+    RE.rgName.exec(text)?.[1] ||
+    RE.rgLoose.exec(text)?.[0];
+
+  const loc = RE.location.exec(text)?.[2];
+
+  let tags: Record<string, string> | undefined;
+  const tagsRaw = RE.tagsObj.exec(text)?.[1];
+  if (tagsRaw) {
+    try { tags = parseTags(JSON.parse(tagsRaw)); } catch { /* ignore */ }
+  }
+  return { name, location: loc, tags };
 }
 
-function naiveLocalPlan(text: string): { tool: string; args: any; rationale: string } | null {
-  const s = text.trim();
-  const m1 = /create\s+(?:a\s+)?resource\s+group\s+([A-Za-z0-9_-]+)/i.exec(s);
-  const m1loc = /in\s+(?:region\s+)?([A-Za-z0-9-]+)/i.exec(s);
-  if (m1) return { tool: 'platform.create_resource_group', args: { name: m1[1], location: m1loc?.[1] || 'eastus' }, rationale: 'heuristic: create_resource_group' };
-  const m2 = /scan\s+(?:an?\s+)?app\s*service\s*plan\s+([A-Za-z0-9_-]+)\s+in\s+([A-Za-z0-9_-]+)/i.exec(s);
-  if (m2) return { tool: 'platform.scan_appplan_baseline', args: { name: m2[1], resourceGroupName: m2[2] }, rationale: 'heuristic: scan_appplan_baseline' };
-  const m3 = /scan\s+(?:a\s+)?web\s*app\s+([A-Za-z0-9_-]+)\s+in\s+([A-Za-z0-9_-]+)/i.exec(s);
-  if (m3) return { tool: 'platform.scan_webapp_baseline', args: { name: m3[1], resourceGroupName: m3[2] }, rationale: 'heuristic: scan_webapp_baseline' };
-  return null;
+function extractWebScan(text: string) {
+  const resourceGroupName = RE.rgName.exec(text)?.[1];
+  const name = RE.webappName.exec(text)?.[1];
+  return { resourceGroupName, name };
 }
 
-// ── Router method ─────────────────────────────────────────────
-const RouteSchema = z.object({
-  tool: z.string(),
-  args: z.record(z.string(), z.any()).default({}),
-  rationale: z.string().optional(),
-  questions: z.array(z.string()).optional(),
-});
+function extractPlanScan(text: string) {
+  const resourceGroupName = RE.rgName.exec(text)?.[1];
+  const name = RE.planName.exec(text)?.[1];
+  return { resourceGroupName, name };
+}
 
-async function handleRoute(params: any) {
-  const instruction = String(params?.instruction || params?.text || '').trim();
-  if (!instruction) throw new Error('Missing params.instruction (string)');
-  if (catalog.length === 0) await refreshCatalog();
+// Robust, forgiving tag parser for NL inputs.
+function parseTags(input: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const lower = input.trim();
 
-  let plan: z.infer<typeof RouteSchema> | null = null;
+  // Canonicalize common synonyms; extend as needed.
+  const canon = (k: string) =>
+    ({
+      environment: "env",
+      env: "env",
+      owner: "owner",
+      application: "app",
+      app: "app",
+      project: "project",
+    }[k] || k);
 
-  try {
-    const p = await planWithAoai(instruction);
-    plan = RouteSchema.parse({ tool: p.tool, args: p.args || {}, rationale: p.rationale, questions: p.questions });
-  } catch (e: any) {
-    const naive = naiveLocalPlan(instruction);
-    if (!naive) throw e;
-    plan = RouteSchema.parse(naive);
+  // Focus on text after the word "tags" if present (reduces false positives).
+  const iTags = lower.toLowerCase().indexOf("tags");
+  const scope = iTags >= 0 ? lower.slice(iTags + 4) : lower;
+
+  // 1) Fast path: key :|=| is value   (value may be "quoted" or 'quoted' or single-token)
+  //    Examples: owner:jrs, owner=jrs, owner is jrs, owner:"John R S"
+  const pairRe =
+    /\b([a-z][\w.-]*)\s*(?:=|:|\bis\b)\s*(?:"([^"]+)"|'([^']+)'|([^\s,;{}]+))/gi;
+
+  let m: RegExpExecArray | null;
+  while ((m = pairRe.exec(scope)) !== null) {
+    const key = canon(m[1].toLowerCase());
+    if (key === "tags") continue;
+    const val = (m[2] ?? m[3] ?? m[4] ?? "").replace(/[.,;]$/g, "");
+    if (key && val) out[key] = val;
   }
 
-  // Add confirmations if required args are missing
-  const required = requiredArgsFor(plan.tool);
-  const missing = required.filter(k => !(k in (plan!.args || {})));
-  const confirmations = (plan.questions || []).concat(missing.map(k => `${k}: ?`));
-
-  return { tool: plan.tool, args: plan.args, rationale: plan.rationale, confirmations: confirmations.length ? confirmations : undefined };
-}
-
-// ── HTTP server (JSON-RPC + basic GETs) ──────────────────────
-const server = http.createServer(async (req, res) => {
-  try {
-    const url = new URL(req.url || '/', `http://${req.headers.host}`);
-    if (req.method === 'GET' && url.pathname === '/healthz') {
-      res.writeHead(200, { 'content-type': 'text/plain' });
-      return res.end('ok');
-    }
-    if (req.method === 'GET' && url.pathname === '/catalog') {
-      if (catalog.length === 0) await refreshCatalog();
-      res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify({ count: catalog.length, catalog }));
-    }
-
-    if (req.method === 'POST' && url.pathname === '/rpc') {
-      const chunks: Buffer[] = [];
-      for await (const c of req) chunks.push(c as Buffer);
-      const body = Buffer.concat(chunks).toString('utf8');
-      let payload: any;
-      try { payload = JSON.parse(body); } catch { res.writeHead(400); return res.end(JSON.stringify({ error: { message: 'invalid JSON' } })); }
-
-      const { method, params, id } = payload || {};
-      try {
-        if (method === 'nl.route') {
-          const result = await handleRoute(params);
-          res.writeHead(200, { 'content-type': 'application/json' });
-          return res.end(JSON.stringify({ jsonrpc: '2.0', id, result }));
+  // 2) Brace block fallback: tags { owner:jrs, env:dev }  (json-ish, yaml-ish)
+  if (Object.keys(out).length === 0) {
+    const brace = scope.match(/\{([\s\S]*?)\}/);
+    if (brace) {
+      const body = brace[1];
+      // Reuse the same regex within the braces
+      let mb: RegExpExecArray | null;
+      while ((mb = pairRe.exec(body)) !== null) {
+        const key = canon(mb[1].toLowerCase());
+        const val = (mb[2] ?? mb[3] ?? mb[4] ?? "").replace(/[.,;]$/g, "");
+        if (key && val) out[key] = val;
+      }
+      // Last resort: try to coerce into JSON (quote keys) and parse
+      if (Object.keys(out).length === 0) {
+        try {
+          const jsonish = "{" +
+            body
+              .replace(/([,{]\s*)([A-Za-z_][\w.-]*)\s*:/g, '$1"$2":') // quote keys
+              .replace(/:\s*'([^']*)'/g, ':"$1"') +
+            "}";
+          const obj = JSON.parse(jsonish);
+          for (const [k, v] of Object.entries(obj)) out[canon(k.toLowerCase())] = String(v);
+        } catch {
+          /* ignore */
         }
-        if (method === 'refresh-catalog') {
-          await refreshCatalog();
-          res.writeHead(200, { 'content-type': 'application/json' });
-          return res.end(JSON.stringify({ jsonrpc: '2.0', id, result: { ok: true, count: catalog.length } }));
-        }
-        if (method === 'nl.tools') {
-          if (catalog.length === 0) await refreshCatalog();
-          res.writeHead(200, { 'content-type': 'application/json' });
-          return res.end(JSON.stringify({ jsonrpc: '2.0', id, result: catalog }));
-        }
-        res.writeHead(404, { 'content-type': 'application/json' });
-        return res.end(JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32601, message: 'Method not found' } }));
-      } catch (e: any) {
-        res.writeHead(200, { 'content-type': 'application/json' });
-        return res.end(JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32000, message: e?.message || String(e) } }));
       }
     }
-
-    res.writeHead(404, { 'content-type': 'text/plain' });
-    res.end('not found');
-  } catch (e: any) {
-    log.error(e, 'unhandled');
-    res.writeHead(500, { 'content-type': 'text/plain' });
-    res.end('error');
   }
+
+  return out;
+}
+
+function route(instruction: string) {
+  const raw = instruction.toLowerCase() || "";
+  const text = raw.trim();
+
+  const hasScan = RE.scan.test(text);
+  const hasCreate = RE.create.test(text);
+  const mentionsWeb = RE.webappWord.test(text);
+  const mentionsPlan = RE.planWord.test(text);
+  const mentionsRg = RE.rgWord.test(text);  
+
+  // CREATE RG
+  if (hasCreate && mentionsRg) {
+    const { name, location, tags } = extractRgCreate(text);
+    if (name && location) {
+      return {
+        tool: "platform.create_resource_group",
+        args: { name, location, ...(tags ? { tags } : {}) },
+        rationale: "create + resource group detected (name/location parsed)",
+      };
+    }
+  }
+
+  // SCAN WEB APP
+  if (hasScan && mentionsWeb) {
+    const { resourceGroupName, name } = extractWebScan(text);
+    if (resourceGroupName && name) {
+      return {
+        tool: "platform.scan_webapp_baseline",
+        args: { resourceGroupName, name, profile: ATO_DEFAULT },
+        rationale: "scan + webapp detected (rg + name parsed)",
+      };
+    }
+  }
+
+  // SCAN APP SERVICE PLAN
+  if (hasScan && mentionsPlan) {
+    const { resourceGroupName, name } = extractPlanScan(text);
+    if (resourceGroupName && name) {
+      return {
+        tool: "platform.scan_appplan_baseline",
+        args: { resourceGroupName, name, profile: ATO_DEFAULT },
+        rationale: "scan + app service plan detected (rg + name parsed)",
+      };
+    }
+  }
+
+  // SCAN RESOURCE GROUP (baseline everything in RG)
+  if (hasScan && mentionsRg) {
+    const rgName =
+      RE.rgName.exec(text)?.[1] ||
+      RE.rgLoose.exec(text)?.[0];
+
+    if (rgName) {
+      return {
+        tool: "platform.scan_resource_group_baseline",
+        args: { resourceGroupName: rgName, profile: ATO_DEFAULT },
+        rationale: "scan + resource group detected (rg name parsed)",
+      };
+    }
+  }
+
+  // Fallback
+  return {
+    tool: "platform.policy_dump",
+    args: {},
+    rationale: "fallback: show merged policy (intent not recognized)",
+  };
+}
+
+app.post("/rpc", (req, res) => {
+  const { method, params, id } = req.body ?? {};
+
+  // Health ping (handy for testing)
+  if (method === "health") {
+    return res.json({ jsonrpc: "2.0", id, result: "ok" });
+  }
+
+  // The only method this service implements
+  if (method === "nl.route") {
+    const instruction: string = params?.instruction ?? "";
+    try {
+      const result = route(instruction); // { tool, args, rationale }
+      return res.json({ jsonrpc: "2.0", id, result });
+    } catch (e: any) {
+      return res.json({
+        jsonrpc: "2.0",
+        id,
+        error: { code: -32001, message: e?.message || "routing failed" },
+      });
+    }
+  }
+
+  // Unknown method — return JSON-RPC error (not HTTP 404)
+  return res.json({
+    jsonrpc: "2.0",
+    id,
+    error: { code: -32601, message: "Method not found" },
+  });
 });
 
-server.listen(PORT, () => log.info({ PORT, PLATFORM_RPC }, 'router-mcp listening'));
+const port = Number(process.env.PORT || 8700);
+app.listen(port, () => console.log(`[router-mcp] listening on http://127.0.0.1:${port}/rpc`));

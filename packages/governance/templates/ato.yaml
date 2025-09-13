@@ -69,66 +69,43 @@ ato:
             controls: [AU-6, AU-12]
             suggest: "Enable Auditing on the SQL Server to a Log Analytics Workspace."    
       network:
-        policies:
-          - id: "SC-5.vnet-ddos-plan"
-            description: "Attach a DDoS plan to VNets hosting internet-facing workloads"
-            target: { tool: "ato.network.vnet" }
-            effect: warn
-            checks:
-              - { type: "requiredPresent", path: "ddosProtectionPlan.id", message: "Consider DDoS Protection Plan" }
-            suggest:
-              - title: "DDoS Protection Plan"
-                text: "Enable Standard DDoS plan on critical VNets (SC-5)."
-
-          - id: "SC-7.subnet-nsg-required"
-            description: "Subnets should have an NSG"
-            target: { tool: "ato.network.subnet" }
-            effect: warn
-            checks:
-              - { type: "requiredPresent", path: "networkSecurityGroup.id", message: "Attach NSG to subnet" }
-            suggest:
-              - title: "NSG on Subnets"
-                text: "Ensure each subnet has an NSG with least-privilege rules (SC-7)."
-
-          - id: "SC-7.subnet-private-endpoints"
-            description: "PE subnets should disable network policies"
-            target: { tool: "ato.network.subnet" }
-            effect: warn
-            checks:
-              - { type: "equals", path: "privateEndpointNetworkPolicies", value: "Disabled", message: "Disable policies for PE subnets" }
-            suggest:
-              - title: "Private Endpoints"
-                text: "For Private Endpoint subnets, set privateEndpointNetworkPolicies=Disabled (SC-7)."
-
-          - id: "SC-7.nsg-general-advisory"
-            description: "Review inbound NSG rules (22/3389/public)"
-            target: { tool: "ato.network.nsg" }
-            effect: warn
-            checks:
-              # Always attach suggestion; harmless gentle advisory
-              - { type: "requiredPresent", path: "id" }
-            suggest:
-              - title: "Audit NSG Ingress"
-                text: "Check for 0.0.0.0/0 to 22/3389 and restrict by source ranges; prefer JIT or Private Access (SC-7)."
-
-          - id: "SC-7.public-ip-standard"
-            description: "Use Standard SKU Public IPs"
-            target: { tool: "ato.network.public_ip" }
-            effect: warn
-            checks:
-              - { type: "notEquals", path: "sku.name", value: "Basic", message: "Avoid Basic SKU public IPs" }
-            suggest:
-              - title: "Public IP SKU"
-                text: "Use Standard SKU public IPs for zone-redundancy and better security defaults (SC-7)."
+        rules:
+          VNET_PE_NO_PRIVATE_DNS:
+            controls: [SC-7]
+            suggest: "Use Private DNS zones with Private Endpoints."
+          VNET_SUBNET_DELEG_NOT_SET:
+            controls: [SC-7]
+            suggest: "Set subnet delegation for App Service Environments or Azure Functions."
+          VNET_SUBNET_NSG_MISSING:
+            controls: [SC-7]
+            suggest: "Associate a Network Security Group (NSG) with the subnet."
+          VNET_DIAG_NO_LAW:
+            controls: [AU-6, AU-12]
+            suggest: "Enable diagnostic settings to a Log Analytics Workspace."
       key_vault:
-        policies:
-          - id: "SC-7.kv-private-endpoints"
-            description: "KV should prefer private endpoints + RBAC"
-            target: { tool: "ato.workload.key_vault" }
-            effect: warn
-            checks:
-              - { type: "equals", path: "properties.enableRbacAuthorization", value: true, message: "Prefer RBAC authorization" }
-              - { type: "notEquals", path: "properties.publicNetworkAccess", value: "Enabled", message: "Consider Private Endpoint + firewall" }
-            suggest:
-              - title: "KV Access Model"
-                text: "Enable RBAC and move to Private Endpoints with firewall allow-listing (SC-7)."
+        rules:
+          KV_SOFT_DELETE_DISABLED:
+            controls: [SI-12]
+            suggest: "Enable soft delete on the Key Vault."
+          KV_PURGE_PROT_DISABLED:
+            controls: [SI-12]
+            suggest: "Enable purge protection on the Key Vault."
+          KV_RBAC_DISABLED:
+            controls: [AC-3, AC-6]
+            suggest: "Enable RBAC authorization on the Key Vault."    
+          KV_DIAG_NO_LAW:
+            controls: [AU-6, AU-12]
+            suggest: "Enable diagnostic settings to a Log Analytics Workspace."
+          KV_MSI_DISABLED:
+            controls: [AC-3, IA-2]
+            suggest: "Enable system-assigned identity on the Key Vault."
+      logAnalyticsWorkspace:
+        rules:
+          LAW_DIAG_NO_LAW:
+            controls: [AU-6, AU-12]
+            suggest: "Enable diagnostic settings to a Log Analytics Workspace."
+      resourceGroup:
+        rules:          
+          RG_TAGS_MISSING:
+            controls: [CM-6]
+            suggest: "Apply required tags to the Resource Group."

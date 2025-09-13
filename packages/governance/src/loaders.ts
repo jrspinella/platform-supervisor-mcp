@@ -1,3 +1,4 @@
+// packages/governance-core/src/load.ts
 import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
@@ -13,7 +14,7 @@ import {
 } from "./schemas.js";
 
 export function deepMerge(a: any, b: any): any {
-  if (Array.isArray(a) && Array.isArray(b)) return b; // lists override
+  if (Array.isArray(a) && Array.isArray(b)) return b;
   if (a && typeof a === "object" && b && typeof b === "object") {
     const out: any = { ...a };
     for (const k of Object.keys(b)) out[k] = deepMerge(a?.[k], b[k]);
@@ -55,10 +56,8 @@ function validatePartial(doc: any, source: string): any {
   const base = path.basename(source).toLowerCase();
   const which: "policy"|"ato"|"mixed" = base.includes("ato") ? "ato" : base.includes("policy") ? "policy" : "mixed";
 
-  // warnings pass (strict): capture unknown keys but do not throw
   collectWarningsStrict(doc, source, which);
 
-  // permissive pass: actual validation
   const schema = which === "policy" ? PolicyOnlySchema : which === "ato" ? AtoOnlySchema : GovernanceDocSchema;
   const parsed = schema.safeParse(doc);
   if (!parsed.success) {
@@ -81,7 +80,6 @@ export function loadPoliciesFromYaml(files: string[]): PolicyDoc {
     const v = validatePartial(y, p);
     doc = deepMerge(doc, v);
   }
-  // Final whole-doc validation
   collectWarningsStrict(doc, "<merged>", "mixed");
   const final = GovernanceDocSchema.safeParse(doc);
   if (!final.success) {
@@ -112,7 +110,7 @@ export function ensureLoaded(): PolicyDoc {
   return loaded;
 }
 
-// ATO helpers (unchanged)
+// ATO helpers
 export function hasAtoProfile(domain: string, profile = "default"): boolean {
   const doc = ensureLoaded();
   const rules = (doc as any)?.ato?.profiles?.[profile]?.[domain]?.rules;

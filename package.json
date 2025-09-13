@@ -12,13 +12,26 @@
     "dev:github-mcp": "pnpm -C servers/github-mcp dev",
     "dev:governance-mcp": "pnpm -C servers/governance-mcp dev",
     "dev:platform-mcp": "pnpm -C servers/platform-mcp dev",
-    "dev:developer-mcp": "pnpm -C servers/developer-mcp dev"
+    "dev:developer-mcp": "pnpm -C servers/developer-mcp dev",
+    "watch": "npm --prefix apps/supervisor-copilot run watch"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/react": "^19.1.12",
+    "@types/react-dom": "^19.1.9",
     "rimraf": "^6.0.1",
+    "tsup": "^8.1.0",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2",
+    "vite": "^5.4.0",
     "zod": "^3.25.8"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "ink": "^4.4.1",
+    "ink-spinner": "^5.0.0",
+    "ink-text-input": "^6.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.2.0"
   }
 }

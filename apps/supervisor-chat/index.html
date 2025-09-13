@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Supervisor Chat</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body { margin: 0; background:#0b0d12; color:#e7ecf3; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
+      .app { height: 100dvh; display: grid; grid-template-rows: auto 1fr; }
+      header, footer { padding: 10px 14px; display:flex; align-items:center; justify-content:space-between; gap:8px; }
+      .pill { padding: 4px 10px; border-radius: 999px; background:#131826; color:#a6b3cf; font-size:12px; }
+      .layout { display:grid; grid-template-columns: 320px 1fr; gap:10px; padding:10px; height: calc(100dvh - 60px); }
+      .sidebar { border:1px solid #1b2236; border-radius:14px; background:#0e1320; display:flex; flex-direction:column; min-height:0; }
+      .sidebar .section { padding:10px; border-bottom:1px solid #141c30; }
+      .sidebar .list { overflow:auto; padding:10px; display:grid; gap:8px; }
+      .sidebar input { width:100%; padding:8px 10px; border-radius:10px; border:1px solid #1b2236; background:#0a0f1c; color:#e7ecf3; }
+      .sidebar .tool { padding:10px; border:1px solid #1b2236; border-radius:10px; cursor:pointer; background:#0b1328; }
+      .sidebar .tool:hover { border-color:#2b6cff55; }
+      .sidebar .schema { font:12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background:#0a0f1c; border:1px solid #1b2236; border-radius:10px; padding:10px; color:#cfe1ff; white-space:pre-wrap; word-break:break-word; max-height:200px; overflow:auto; }
+      .content { border:1px solid #1b2236; border-radius:14px; background:#0e1320; padding:12px; display:grid; grid-template-rows: 1fr auto; min-height:0; }
+      .messages { overflow:auto; display:flex; flex-direction:column; gap:12px; padding-right:4px; }
+      .composer { display:grid; grid-template-columns: 1fr auto; gap:8px; margin-top:12px; }
+      textarea { width:100%; min-height:54px; max-height:180px; resize:vertical; padding:12px; background:#0a0f1c; color:#e7ecf3; border:1px solid #1b2236; border-radius:12px; font:inherit; }
+      button { background:#2b6cff; color:white; border:0; border-radius:12px; padding:0 18px; font:inherit; cursor:pointer; }
+      button.secondary { background:#121a2b; color:#c7d2f0; border:1px solid #1b2236; }
+      .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+      .bubble { border:1px solid #1b2236; padding:12px; border-radius:12px; background:#0b1328; color:#dbe6ff; }
+      .bubble.assistant { background:#0c152f; border-color:#1f2a44; }
+      .plan { border:1px dashed #29406d; border-radius:12px; padding:10px; background:#0c1526; }
+      .monospace { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+      .small { font-size:12px; color:#9fb0d7; }
+      .jsonedit { width:100%; min-height:120px; background:#0a0f1c; color:#e7ecf3; border:1px solid #1b2236; border-radius:12px; font:12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding:12px; resize:vertical; }
+      .kbar { display:grid; grid-template-columns: 1fr 1fr; gap:8px; }
+      .endpoints input { width:100%; padding:6px 8px; border-radius:8px; border:1px solid #1b2236; background:#0a0f1c; color:#e7ecf3; font:12px; }
+      .toggle { display:flex; align-items:center; gap:6px; }
+      .hr { height:1px; background:#141c30; margin:8px 0; }
+      table td, table th { border-bottom: 1px solid #141c30; }
+      table tr:hover td { background:#0f1a33; }
+    </style>
+  </head>
+  <body>
+    <div id="root" class="app"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

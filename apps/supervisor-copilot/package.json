@@ -1,0 +1,76 @@
+{
+  "name": "platform-supervisor-vscode",
+  "displayName": "Platform Engineering Agent",
+  "version": "0.0.1",
+  "publisher": "your-org",
+  "engines": {
+    "vscode": "^1.91.0"
+  },
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onChatParticipant:platform",
+    "onStartupFinished",
+    "onCommand:platform.supervisor.run",
+    "onCommand:platform.supervisor.health"
+  ],
+  "enabledApiProposals": ["chatParticipants"],
+  "contributes": {
+    "chatParticipants": [
+      {
+        "id": "platform.supervisor",
+        "name": "platform",
+        "fullName": "Platform Engineering Agent",
+        "description": "Creates, scans, remediates, and manages cloud workloads via the Platform Engineering Agent.",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "create",
+            "description": "Run a create operation (e.g. /create resource group …)"
+          },
+          {
+            "name": "scan",
+            "description": "Run a baseline scan (e.g. /scan web app …)"
+          },
+          {
+            "name": "remediate",
+            "description": "Apply safe remediations (plan or apply)"
+          }
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "command": "platform.supervisor.run",
+        "title": "Platform: Supervisor (Run Instruction)"
+      },
+      {
+        "command": "platform.supervisor.health",
+        "title": "Platform: Health Check"
+      }
+    ],
+    "configuration": {
+      "title": "Platform Engineering Agent",
+      "properties": {
+        "platformSupervisor.routerUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8700/rpc",
+          "description": "Router MCP JSON-RPC URL"
+        },
+        "platformSupervisor.platformUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8721/rpc",
+          "description": "Platform MCP JSON-RPC URL"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --platform=node --external:vscode --outfile=dist/extension.js",
+    "watch": "esbuild src/extension.ts --bundle --platform=node --external:vscode --outfile=dist/extension.js --watch",
+    "dev": "npm run watch"
+  },
+  "devDependencies": {
+    "esbuild": "^0.21.5",
+    "typescript": "^5.5.0"
+  }
+}

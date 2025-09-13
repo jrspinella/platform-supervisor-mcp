@@ -9,6 +9,7 @@ export {
   getAtoProfile,
   getAtoRule,
   getValidationWarnings,
+  clearValidationWarnings,
   GovernanceValidationError,
 } from "./loaders.js";
 export { evaluate } from "./evaluate.js";

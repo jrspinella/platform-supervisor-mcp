@@ -1,15 +1,11 @@
+// packages/governance-core/src/schemas.ts
 import { z } from "zod";
 
-// ──────────────────────────────────────────────────────────────
-// Common building blocks
-// ──────────────────────────────────────────────────────────────
+// ────────── Common
 const TagMap = z.record(z.string());
 const StringArray = z.array(z.string());
 
-// ──────────────────────────────────────────────────────────────
-// Resource-specific policy schemas (per create_* node)
-// Keep requireds minimal; prefer guidance & validation over rejection.
-// ──────────────────────────────────────────────────────────────
+// ────────── Azure create_* policy shapes (permissive)
 export const CreateRgPolicySchema = z.object({
   deny_names: StringArray.optional(),
   deny_contains: StringArray.optional(),
@@ -25,7 +21,7 @@ export const CreateRgPolicySchema = z.object({
 
 export const CreateStorageAccountPolicySchema = z.object({
   name_regex: z.string().optional(),
-  allowed_skus: StringArray.optional(), // e.g. Standard_LRS, Standard_GRS
+  allowed_skus: StringArray.optional(),
   min_tls_version: z.enum(["1.0", "1.1", "1.2", "1.3"]).optional(),
   require_https_traffic_only: z.boolean().optional(),
   allow_shared_key_access: z.boolean().optional(),
@@ -37,19 +33,19 @@ export const CreateStorageAccountPolicySchema = z.object({
 
 export const CreateKeyVaultPolicySchema = z.object({
   name_regex: z.string().optional(),
-  sku_allowed: StringArray.optional(), // e.g. standard, premium
+  sku_allowed: StringArray.optional(),
   public_network_access: z.enum(["Enabled", "Disabled"]).optional(),
   purge_protection_required: z.boolean().optional(),
   soft_delete_required: z.boolean().optional(),
   rbac_authorization_required: z.boolean().optional(),
-  network_bypass_allowed: StringArray.optional(), // e.g. AzureServices
+  network_bypass_allowed: StringArray.optional(),
   require_private_endpoints: z.boolean().optional(),
   require_tags: StringArray.optional(),
   controls: StringArray.optional(),
 }).passthrough();
 
 export const CreateLogAnalyticsPolicySchema = z.object({
-  workspace_sku_allowed: StringArray.optional(), // e.g. PerGB2018
+  workspace_sku_allowed: StringArray.optional(),
   retention_days_min: z.number().int().positive().optional(),
   allowed_regions: StringArray.optional(),
   require_tags: StringArray.optional(),
@@ -76,7 +72,7 @@ export const CreatePrivateEndpointPolicySchema = z.object({
 }).passthrough();
 
 export const CreateAppServicePlanPolicySchema = z.object({
-  sku_allowed: StringArray.optional(), // e.g. B1, P1v3
+  sku_allowed: StringArray.optional(),
   zone_redundancy_required: z.boolean().optional(),
   controls: StringArray.optional(),
 }).passthrough();
@@ -84,15 +80,13 @@ export const CreateAppServicePlanPolicySchema = z.object({
 export const CreateWebAppPolicySchema = z.object({
   https_only_required: z.boolean().optional(),
   min_tls_version: z.enum(["1.0", "1.1", "1.2", "1.3"]).optional(),
-  ftps_state_allowed: StringArray.optional(), // e.g. Disabled, FtpsOnly
+  ftps_state_allowed: StringArray.optional(),
   managed_identity_required: z.boolean().optional(),
   diagnostic_settings_required: z.boolean().optional(),
   controls: StringArray.optional(),
 }).passthrough();
 
-// ──────────────────────────────────────────────────────────────
-// Azure policy set schema (per service create_* node)
-// ──────────────────────────────────────────────────────────────
+// Azure policy set
 export const AzurePolicySetSchema = z.object({
   create_resource_group: CreateRgPolicySchema.optional(),
   create_storage_account: CreateStorageAccountPolicySchema.optional(),
@@ -103,9 +97,8 @@ export const AzurePolicySetSchema = z.object({
   create_private_endpoint: CreatePrivateEndpointPolicySchema.optional(),
   create_app_service_plan: CreateAppServicePlanPolicySchema.optional(),
   create_web_app: CreateWebAppPolicySchema.optional(),
-}).catchall(z.unknown()); // permissive overall
+}).catchall(z.unknown());
 
-// Strict version to detect unknown keys as warnings
 export const AzurePolicySetSchemaStrict = z.object({
   create_resource_group: CreateRgPolicySchema.strict().optional(),
   create_storage_account: CreateStorageAccountPolicySchema.strict().optional(),
@@ -118,41 +111,33 @@ export const AzurePolicySetSchemaStrict = z.object({
   create_web_app: CreateWebAppPolicySchema.strict().optional(),
 }).strict();
 
-// ──────────────────────────────────────────────────────────────
-// ATO schemas (unchanged, permissive)
-// ──────────────────────────────────────────────────────────────
-export const AtoCheckSchema = z.object({
-  code: z.string(),
-  title: z.string().optional(),
-  severity: z.union([
-    z.literal("high"), z.literal("medium"), z.literal("low"), z.literal("info"), z.literal("unknown"), z.string()
-  ]).optional(),
+// ────────── ATO (your structure: profiles.default.<domain>.rules.<CODE>)
+const AtoRule = z.object({
   controls: z.array(z.string()).optional(),
-  recommendation: z.string().optional(),
-  fix: z.unknown().optional(),
-}).passthrough();
+  controlIds: z.array(z.string()).optional(), // alias
+  suggest: z.string().optional(),
+  suggestion: z.string().optional(), // alias
+}).strict();
 
-const AtoCheckListOrMap = z.union([z.array(AtoCheckSchema), z.record(AtoCheckSchema)]);
+const AtoDomain = z.object({
+  rules: z.record(AtoRule),
+}).passthrough();
 
 export const AtoSchema = z.object({
   defaultProfile: z.string().optional(),
-  profiles: z.record(z.object({
-    checks: z.record(AtoCheckListOrMap).optional(),
-  }).catchall(z.unknown())).optional(),
-  checks: z.record(AtoCheckListOrMap).optional(),
+  profiles: z.record(
+    z.object({}).catchall(AtoDomain) // any domain name -> { rules: {...} }
+  ).optional(),
 }).passthrough();
 
 export const AtoSchemaStrict = z.object({
   defaultProfile: z.string().optional(),
-  profiles: z.record(z.object({
-    checks: z.record(AtoCheckListOrMap).optional(),
-  }).strict()).optional(),
-  checks: z.record(AtoCheckListOrMap).optional(),
+  profiles: z.record(
+    z.object({}).catchall(z.object({ rules: z.record(AtoRule) }).strict())
+  ).optional(),
 }).strict();
 
-// ──────────────────────────────────────────────────────────────
 // Top-level governance docs
-// ──────────────────────────────────────────────────────────────
 export const GovernanceDocSchema = z.object({
   azure: AzurePolicySetSchema.optional(),
   ato: AtoSchema.optional(),
