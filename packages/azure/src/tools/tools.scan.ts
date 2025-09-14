@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { ToolDef } from "mcp-http";
 import type { MakeAzureToolsOptions } from "../types.js";
 import { normalizeAzureError, scanSummary, formatTextSummary, filterFindings } from "../utils.js";
+import { renderRgScanPretty } from "../index.js";
 
 const sevIcon: Record<string, string> = {
   high: "🔴", medium: "🟠", low: "🟡", info: "🔵", unknown: "⚪️",
@@ -925,24 +926,28 @@ export function makeAzureScanTools(opts: MakeAzureToolsOptions & { namespace?: s
           excludeCodes: a.excludeFindingsByCode,
         });
         const summary = scanSummary(filtered);
+        const md = renderRgScanPretty({
+          scope: { resourceGroupName: a.resourceGroupName },
+          profile,
+          findings: filtered,
+          summary,
+          filters: { dropped: (findings?.length ?? 0) - (filtered?.length ?? 0) },
+        });
+
         return {
           content: [
+            { type: "text", text: md },
             {
-              type: "json" as const,
+              type: "json",
               json: {
                 status: "done",
                 scope: { resourceGroupName: a.resourceGroupName },
                 profile,
                 findings: filtered,
                 summary,
-                filters: {
-                  minSeverity: a.minSeverity,
-                  excludeFindingsByCode: a.excludeFindingsByCode,
-                  dropped: (findings?.length ?? 0) - (filtered?.length ?? 0),
-                },
+                filters: { dropped: (findings?.length ?? 0) - (filtered?.length ?? 0) },
               },
             },
-            { type: "text" as const, text: formatTextSummary("resource group", profile, summary) },
           ],
         };
       } catch (e: any) {
@@ -951,5 +956,8 @@ export function makeAzureScanTools(opts: MakeAzureToolsOptions & { namespace?: s
     },
   };
 
+  // ────────────────────────────────────────────────────────────
+  // Export
+  // ────────────────────────────────────────────────────────────
   return [scan_webapp_baseline, scan_appplan_baseline, scan_network_baseline, scan_workload_baseline, scan_resource_group_baseline];
 }

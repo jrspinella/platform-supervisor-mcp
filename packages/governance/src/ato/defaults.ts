@@ -14,7 +14,11 @@ export const DEFAULT_ATO_PROFILES: AtoProfiles = {
     },
     appPlan: {
       rules: {
-        PLAN_MIN_TLS_BELOW_1_2: { controls: ["SC-13", "SC-8"], suggest: "Set minimum TLS version to 1.2 and disable legacy protocols." },
+        APPPLAN_HTTPS_ONLY_DISABLED: { controls: ["SC-23"], suggest: "Enable HTTPS-only on the App Service Plan." },
+        APPPLAN_MIN_TLS_BELOW_1_2: { controls: ["SC-13", "SC-8"], suggest: "Set minimum TLS version to 1.2 and disable legacy protocols." },
+        APPPLAN_MSI_DISABLED: { controls: ["AC-3", "IA-2"], suggest: "Enable system-assigned identity on the App Service Plan." },
+        APPPLAN_DIAG_NO_LAW: { controls: ["AU-6", "AU-12"], suggest: "Enable diagnostic settings to a Log Analytics Workspace." },
+
       },
     },
     functionApp: {

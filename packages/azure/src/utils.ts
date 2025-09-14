@@ -805,7 +805,14 @@ export function presentAksCluster(mc: any) {
 // ──────────────────────────────────────────────────────────────────────────────
 // Scan helpers
 // ──────────────────────────────────────────────────────────────────────────────
-export type ScanFinding = { severity?: string;[k: string]: any };
+export type ScanFinding = {
+  code: string;
+  severity?: string;
+  controlIds?: string[];
+  suggest?: string;
+  meta?: Record<string, any>;
+  [k: string]: any
+};
 
 export function scanSummary(findings: ScanFinding[] | undefined) {
   const bySeverity: Record<string, number> = {};

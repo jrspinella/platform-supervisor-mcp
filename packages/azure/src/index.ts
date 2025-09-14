@@ -6,3 +6,4 @@ export * from "./tools/tools.deploy.js";
 export * from "./tools/tools.remediation.js";
 export * from "./tools/tools.workload.js";
 export * from "./clients.azure.js";
+export * from "./presenters/presenters.scan.js";
