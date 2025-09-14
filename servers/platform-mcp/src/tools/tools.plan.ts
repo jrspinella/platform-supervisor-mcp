@@ -42,6 +42,8 @@ function isJson(c: McpContent): c is { type: "json"; json: any } { return c?.typ
 function asArray<T>(x: T | T[] | undefined): T[] { return Array.isArray(x) ? x : x ? [x] : []; }
 function iconForResult(r: "ok" | "error") { return r === "ok" ? "✅" : "⛔️"; }
 
+type FailureKind = "MISSING_RG" | "BAD_LINUX_FX" | "OTHER";
+
 function renderPlanSummary(status: "done" | "stopped", progress: Array<{ step: number; tool: string; status: "ok" | "error" }>): McpContent {
   const banner = status === "done" ? "✅ Plan completed" : "⛔️ Plan stopped";
   const lines: string[] = [
@@ -65,11 +67,81 @@ function firstJsonChunk(res: any): any | undefined {
   return content.find(isJson)?.json;
 }
 
-function tryParseErrorJSON(msg: unknown): any | undefined {
-  if (typeof msg !== "string") return undefined;
-  const s = msg.trim();
-  if (!s.startsWith("{") && !s.startsWith("[")) return undefined;
-  try { return JSON.parse(s); } catch { return undefined; }
+function jsonChunks(res: any): any[] {
+  return asArray(res?.content)
+    .filter((c: McpContent) => c?.type === "json")
+    .map((c: any) => c.json);
+}
+
+function tryParseErrorJSON(txt: unknown): any | undefined {
+  if (typeof txt !== "string") return undefined;
+  const s = txt.trim();
+  // strip code fences ``` or ```json
+  const unfenced = s.replace(/^```(?:json)?\s*/i, "").replace(/```$/i, "").trim();
+  // best-effort: parse the largest {...} region
+  const start = unfenced.indexOf("{");
+  const end = unfenced.lastIndexOf("}");
+  if (start < 0 || end <= start) return undefined;
+  try { return JSON.parse(unfenced.slice(start, end + 1)); } catch { return undefined; }
+}
+
+/** Normalize common Azure error shapes into a single { code?, statusCode?, message?, raw? } object */
+function coerceAzureErrorShape(j: any): any | undefined {
+  if (!j || typeof j !== "object") return undefined;
+
+  // normalizeAzureError shape: { status: "error", error: {...} }
+  if (j.status === "error" && j.error) return j.error;
+
+  // plain { error: {...} }
+  if (j.error && typeof j.error === "object") return j.error;
+
+  // some tools return { code, message, statusCode }
+  if (j.code && j.message) return { code: j.code, message: j.message, statusCode: j.statusCode };
+
+  // REST error pass-through
+  if (j.raw && (j.raw.code || j.raw.statusCode || j.raw.message)) {
+    return { type: "HttpError", ...j, ...j.raw };
+  }
+
+  return undefined;
+}
+
+/**
+ * Extract the most informative error object from a tool response.
+ * Looks at:
+ *   1) top-level {error} / {status:"error", error}
+ *   2) JSON content chunks
+ *   3) text content chunks with embedded JSON
+ *   4) common Azure 'raw' shapes
+ */
+export function extractErrorObject(res: any): any | undefined {
+  // 1) Top-level
+  const top =
+    coerceAzureErrorShape(res) ||
+    coerceAzureErrorShape(res?.error) ||
+    (res?.status === "error" ? res : undefined);
+  if (top) return top;
+
+  // 2) JSON chunks
+  for (const j of jsonChunks(res)) {
+    const coerced = coerceAzureErrorShape(j);
+    if (coerced) return coerced;
+  }
+
+  // 3) Text chunks that contain JSON
+  for (const c of asArray(res?.content)) {
+    if (c?.type === "text" && typeof c.text === "string") {
+      const parsed = tryParseErrorJSON(c.text);
+      const coerced = coerceAzureErrorShape(parsed);
+      if (coerced) return coerced;
+    }
+  }
+
+  // 4) Fallbacks
+  if (res?.raw) return { type: "HttpError", ...res.raw };
+  if (res?.error?.raw) return { type: "HttpError", ...res.error.raw };
+
+  return undefined;
 }
 
 function extractUserMessage(errLike: any): string {
@@ -133,18 +205,28 @@ function fallbackPresenterFromJson(json: any): McpContent[] | undefined {
 
 /* ─────────────────────── Failure classification + tips ────────────────────── */
 
-function classifyFailure(_toolName: string, _args: any, errLike: any) {
+function classifyFailure(errLike: any): { kind: FailureKind; message?: string } {
   const e = errLike?.error || errLike || {};
-  const code = String(e.code || e.type || "");
-  const msg = String(e.message || "");
+  const code = (e.code || e.type || "").toString();
+  const msg = (e.message || e.raw?.message || "").toString();
 
-  if (code === "ResourceGroupNotFound" || /Resource group .* not be found/i.test(msg)) {
-    return { kind: "MISSING_RG" as const };
+  if (code === "ResourceGroupNotFound" || /resource group .* not be found/i.test(msg)) {
+    return { kind: "MISSING_RG", message: msg };
   }
-  if (/LinuxFxVersion/i.test(msg) || /invalid value/i.test(msg)) {
-    return { kind: "BAD_LINUX_FX" as const };
+  if (/LinuxFxVersion has an invalid value/i.test(msg)) {
+    return { kind: "BAD_LINUX_FX", message: msg };
   }
-  return { kind: "UNKNOWN" as const };
+  return { kind: "OTHER", message: msg };
+}
+
+function renderQuickFixes(s: Array<{ title: string; bash: string }>): McpContent[] {
+  if (!s?.length) return [];
+  const lines = [
+    "\n**Quick fixes**",
+    "",
+    ...s.map(x => `- ${x.title}\n\n\`\`\`bash\n${x.bash}\n\`\`\``)
+  ];
+  return [{ type: "text", text: lines.join("\n") }];
 }
 
 function suggestNextSteps(toolName: string, args: any, failure: ReturnType<typeof classifyFailure>) {
@@ -298,7 +380,7 @@ export function makePlanTools(resolveTool: (name: string) => ToolDef | undefined
           progress.push({ step: i, tool: step.tool, status: "error", error: "unknown tool" });
           transcript.push(stepHeader(i, step.tool, "error"));
           transcript.push({ type: "text", text: `**Error**\n> Tool not found: \`${step.tool}\`` });
-          return { content: [...transcript, { type: "json", json: { status: "stopped", progress } }], isError: true };
+          return { content: [...transcript, { type: "json" as const, json: { status: "stopped", progress } }], isError: true };
         }
 
         const args = { ...(step.args || {}), ...(plan.profile ? { profile: plan.profile } : {}) };
@@ -315,23 +397,14 @@ export function makePlanTools(resolveTool: (name: string) => ToolDef | undefined
 
           if (failed) {
             // Add Next steps suggestions
-            const failure = classifyFailure(step.tool, mergedArgs, res);
-            const next = suggestNextSteps(step.tool, mergedArgs, failure);
-            if (next.length) {
-              transcript.push({ type: "text", text: "\n**Next steps**" });
-              for (const s of next) {
-                transcript.push({ type: "text", text: `- ${s.title}` });
-                transcript.push({ type: "text", text: "```bash\n" + s.bash + "\n```" });
-              }
-            }
+            const errObj = extractErrorObject(res) ?? res;
+            const failure = classifyFailure(errObj);
+            const fixes = suggestNextSteps(step.tool, mergedArgs, failure);
+            transcript.push(...renderQuickFixes(fixes));
 
             progress.push({ step: i, tool: step.tool, status: "error" });
             return {
-              content: [
-                ...transcript,
-                renderPlanSummary("stopped", progress),
-                ...(plan.debugJson ? [{ type: "json" as const, json: { status: "stopped", progress } }] : []),
-              ],
+              content: [...transcript, renderPlanSummary("stopped", progress), ...(plan.debugJson ? [{ type: "json" as const, json: { status: "stopped", progress } }] : [])],
               isError: true,
             };
           }
@@ -346,7 +419,7 @@ export function makePlanTools(resolveTool: (name: string) => ToolDef | undefined
           progress.push({ step: i, tool: step.tool, status: "error", error: msg });
           transcript.push(stepHeader(i, step.tool, "error"));
           transcript.push({ type: "text", text: renderErrorSummary({ error: { message: msg } }) });
-          return { content: [...transcript, { type: "json", json: { status: "stopped", progress } }], isError: true };
+          return { content: [...transcript, { type: "json" as const, json: { status: "stopped", progress } }], isError: true };
         }
       }
 
