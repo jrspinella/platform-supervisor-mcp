@@ -82,8 +82,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       stream.progress(`Routing via ${routerUrl}…`);
       const route = await callJsonRpc(routerUrl, 'nl.route', { instruction: text }, signal);
 
-      stream.markdown([
-        `**Routed to:** \`${route.tool}\``,
+      stream.markdown([        
         route.rationale ? `> ${route.rationale}` : '',
         '',
         /* '```json',

@@ -119,12 +119,6 @@ importers:
 
   apps/supervisor-copilot:
     devDependencies:
-      '@types/node':
-        specifier: ^20.11.0
-        version: 20.19.13
-      '@types/vscode':
-        specifier: ^1.95.0
-        version: 1.104.0
       esbuild:
         specifier: ^0.21.5
         version: 0.21.5
@@ -341,6 +335,9 @@ importers:
       pino:
         specifier: ^9.2.0
         version: 9.9.5
+      yaml:
+        specifier: ^2.8.1
+        version: 2.8.1
       zod:
         specifier: ^3.23.8
         version: 3.25.76
@@ -1056,9 +1053,6 @@ packages:
   '@types/node@18.19.124':
     resolution: {integrity: sha512-hY4YWZFLs3ku6D2Gqo3RchTd9VRCcrjqp/I0mmohYeUVA5Y8eCXKJEasHxLAJVZRJuQogfd1GiJ9lgogBgKeuQ==}
 
-  '@types/node@20.19.13':
-    resolution: {integrity: sha512-yCAeZl7a0DxgNVteXFHt9+uyFbqXGy/ShC4BlcHkoE0AfGXYv/BUiplV72DjMYXHDBXFjhvr6DD1NiRVfB4j8g==}
-
   '@types/node@22.18.1':
     resolution: {integrity: sha512-rzSDyhn4cYznVG+PCzGe1lwuMYJrcBS1fc3JqSa2PvtABwWo+dZ1ij5OVok3tqfpEBCBoaR4d7upFJk73HRJDw==}
 
@@ -1098,9 +1092,6 @@ packages:
 
   '@types/serve-static@1.15.8':
     resolution: {integrity: sha512-roei0UY3LhpOJvjbIP6ZZFngyLKl5dskOtDhxY5THRSpO+ZI+nzJ+m5yUMzGrp89YRa7lvknKkMYjqQFGwA7Sg==}
-
-  '@types/vscode@1.104.0':
-    resolution: {integrity: sha512-0KwoU2rZ2ecsTGFxo4K1+f+AErRsYW0fsp6A0zufzGuhyczc2IoKqYqcwXidKXmy2u8YB2GsYsOtiI9Izx3Tig==}
 
   '@typespec/ts-http-runtime@0.3.0':
     resolution: {integrity: sha512-sOx1PKSuFwnIl7z4RN0Ls7N9AQawmR9r66eI5rFCzLDIs8HTIYrIpH9QjYWoX0lkgGrkLxXhi4QnK7MizPRrIg==}
@@ -3051,10 +3042,6 @@ snapshots:
     dependencies:
       undici-types: 5.26.5
 
-  '@types/node@20.19.13':
-    dependencies:
-      undici-types: 6.21.0
-
   '@types/node@22.18.1':
     dependencies:
       undici-types: 6.21.0
@@ -3098,8 +3085,6 @@ snapshots:
       '@types/http-errors': 2.0.5
       '@types/node': 24.3.1
       '@types/send': 0.17.5
-
-  '@types/vscode@1.104.0': {}
 
   '@typespec/ts-http-runtime@0.3.0':
     dependencies:

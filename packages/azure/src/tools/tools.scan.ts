@@ -54,9 +54,24 @@ export function makeAzureScanTools(opts: MakeAzureToolsOptions & { namespace?: s
   async function ensureAto() {
     if (!_getAtoRule || !_getAtoProfile || !_hasAtoProfile) {
       const gc = await import("@platform/governance-core");
-      _getAtoRule = _getAtoRule || gc.getAtoRule;
+      if (typeof gc.ensureAtoLoaded === "function") {
+        await gc.ensureAtoLoaded();
+      }
+      _getAtoRule = _getAtoRule || ((domain: string, profile: string, code: string) => {
+        // Wrap gc.getAtoRule to match expected signature
+        const rule = gc.getAtoRule?.(profile, domain as any, code);
+        if (!rule) return null;
+        return {
+          controlIds: rule.controls || [],
+          suggest: rule.suggest || undefined
+        };
+      });
       _getAtoProfile = _getAtoProfile || gc.getAtoProfile;
-      _hasAtoProfile = _hasAtoProfile || gc.hasAtoProfile;
+      _hasAtoProfile = _hasAtoProfile || ((domain: string, profile: string) => {
+        // Wrap gc.hasAtoProfile to match expected signature
+        // governance-core's hasAtoProfile only takes profile name, not domain
+        return gc.hasAtoProfile?.(profile) || false;
+      });
     }
   }
 
@@ -86,9 +101,15 @@ export function makeAzureScanTools(opts: MakeAzureToolsOptions & { namespace?: s
     const keys = DOMAIN_ALIASES[domain] ?? [domain];
     for (const d of keys) {
       const map = _getAtoRule?.(d, profile, code);
-      if (map) return map;
+      if (map) {
+        // normalize shape: always expose .controlIds
+        return {
+          ...map,
+          controlIds: (map as any).controlIds ?? (map as any).controls ?? [],
+        };
+      }
     }
-    return {};
+    return { controlIds: [], suggest: undefined };
   }
 
   // ────────────────────────────────────────────────────────────

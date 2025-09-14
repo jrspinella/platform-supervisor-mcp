@@ -1,9 +1,10 @@
 import { z } from "zod";
 import type { MakeAzureToolsOptions } from "./types.js";
-import { wrapCreate, wrapGet, withGovernanceAll, coerceTags } from "./utils.js";
 import type { ToolDef } from "mcp-http";
 import { makeAzureScanTools } from "./tools/tools.scan.js";
 import { makeAzureRemediationTools } from "./tools/tools.remediation.js";
+import { coerceTags, harvestTagsFromArgs, normalizeAzureError, normalizeTags, presentAksCluster, presentAppServicePlan, presentKeyVault, presentLogAnalyticsWorkspace, presentPrivateEndpoint, presentResourceGroup, presentStorageAccount, presentSubnet, presentVirtualNetwork, presentWebApp, withGovernanceAll, wrapCreate, wrapGet } from "./utils.js";
+import { evaluate } from "@platform/governance-core";
 
 export function makeAzureTools(opts: MakeAzureToolsOptions) {
   const { clients, evaluateGovernance, namespace = "azure." } = opts;
@@ -17,16 +18,28 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
     "Create (or update) an Azure Resource Group.",
     z.object({ name: z.string(), location: z.string(), tags: z.any().optional() }).strict(),
     async (a) => {
-      const tags = coerceTags(a.tags);
-      return clients.resourceGroups.create(a.name, a.location, tags);
-    }
+      try {
+        const tags = coerceTags(a.tags);
+        return clients.resourceGroups.create(a.name, a.location, tags);
+      } catch (e: any) {
+        return { content: [{ type: "json", json: normalizeAzureError(e) }], isError: true };
+      }
+    },
+    { present: (out: any) => presentResourceGroup(out) }
   );
 
   const get_rg = wrapGet(
     n("get_resource_group"),
     "Get a Resource Group by name.",
     z.object({ name: z.string() }).strict(),
-    async (a) => clients.resourceGroups.get(a.name)
+    async (a: any) => {
+      try {
+        return await clients.resourceGroups.get(a.name);
+      } catch (e: any) {
+        return { content: [{ type: "json", json: normalizeAzureError(e) }], isError: true };
+      }
+    },
+    { present: (out: any) => presentResourceGroup(out) }
   );
 
   // ──────────────────────────────────────────────────────────────
@@ -45,16 +58,28 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
       })
       .strict(),
     async (a) => {
-      const tags = coerceTags(a.tags);
-      return clients.appServicePlans.create(a.resourceGroupName, a.name, a.location, a.sku, tags);
-    }
+      try {
+        const tags = coerceTags(a.tags);
+        return clients.appServicePlans.create(a.resourceGroupName, a.name, a.location, a.sku, tags);
+      } catch (e: any) {
+        return { content: [{ type: "json", json: normalizeAzureError(e) }], isError: true };
+      }
+    },
+    { present: (out) => presentAppServicePlan(out) }
   );
 
   const get_plan = wrapGet(
     n("get_app_service_plan"),
     "Get an App Service Plan.",
     z.object({ resourceGroupName: z.string(), name: z.string() }).strict(),
-    async (a) => clients.appServicePlans.get(a.resourceGroupName, a.name)
+    async (a: any) => {
+      try {
+        return await clients.appServicePlans.get(a.resourceGroupName, a.name);
+      } catch (e: any) {
+        return { content: [{ type: "json", json: normalizeAzureError(e) }], isError: true };
+      }
+    },
+    { present: (out) => presentAppServicePlan(out) }
   );
 
   // ──────────────────────────────────────────────────────────────
@@ -77,35 +102,48 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
         tags: z.any().optional(),
       })
       .strict(),
-    async (a) => {
-      const linuxFx = a.linuxFxVersion ?? a.runtimeStack;
-      const tags = coerceTags(a.tags);
-      return clients.webApps.create({
-        resourceGroupName: a.resourceGroupName,
-        name: a.name,
-        location: a.location,
-        appServicePlanName: a.appServicePlanName,
-        httpsOnly: a.httpsOnly,
-        linuxFxVersion: linuxFx,
-        minimumTlsVersion: a.minimumTlsVersion,
-        ftpsState: a.ftpsState,
-        tags,
-      });
-    }
+    async (a: { tags: any; resourceGroupName: string; name: string; location: string; appServicePlanName: string; httpsOnly: boolean; linuxFxVersion: string; minimumTlsVersion: string; ftpsState: string; runtimeStack: string; }) => {
+      try {
+        const linuxFx = a.linuxFxVersion ?? a.runtimeStack;
+        const tags = normalizeTags(a.tags) ?? harvestTagsFromArgs(a);
+        const out = await clients.webApps.create({
+          resourceGroupName: a.resourceGroupName,
+          name: a.name,
+          location: a.location,
+          appServicePlanName: a.appServicePlanName,
+          httpsOnly: a.httpsOnly,
+          linuxFxVersion: linuxFx,
+          minimumTlsVersion: a.minimumTlsVersion,
+          ftpsState: a.ftpsState,
+          tags,
+        });
+        return out;
+      } catch (e: any) {
+        return { content: [{ type: "json", json: normalizeAzureError(e) }], isError: true };
+      }
+    },
+    { present: (out) => presentWebApp(out) }
   );
 
-  const get_web = wrapGet(
-    n("get_web_app"),
-    "Get a Web App.",
-    z.object({ resourceGroupName: z.string(), name: z.string() }).strict(),
-    async (a) => clients.webApps.get(a.resourceGroupName, a.name)
-  );
+  const get_web = {
+    name: n("get_web_app"),
+    description: "Get a Web App.",
+    inputSchema: z.object({ resourceGroupName: z.string(), name: z.string() }).strict(),
+    handler: async (a: any) => {
+      try {
+        const out = await clients.webApps.get(a.resourceGroupName, a.name);
+        return { content: presentWebApp(out) };
+      } catch (e: any) {
+        return { content: [{ type: "json", json: normalizeAzureError(e) }], isError: true };
+      }
+    },
+  } satisfies ToolDef;
 
   const enable_msi = wrapCreate(
     n("enable_system_assigned_identity"),
     "Enable system-assigned identity for a Web App.",
     z.object({ resourceGroupName: z.string(), name: z.string() }).strict(),
-    async (a) => clients.webApps.enableSystemAssignedIdentity(a.resourceGroupName, a.name)
+    async (a: { resourceGroupName: any; name: any; }) => clients.webApps.enableSystemAssignedIdentity(a.resourceGroupName, a.name)
   );
 
   const apply_settings = wrapCreate(
@@ -114,7 +152,7 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
     z
       .object({ resourceGroupName: z.string(), name: z.string(), appSettings: z.array(z.object({ name: z.string(), value: z.string() })).min(1) })
       .strict(),
-    async (a) => clients.webApps.setAppSettings(a.resourceGroupName, a.name, a.appSettings)
+    async (a: { resourceGroupName: any; name: any; appSettings: any; }) => clients.webApps.setAppSettings(a.resourceGroupName, a.name, a.appSettings)
   );
 
   // ──────────────────────────────────────────────────────────────
@@ -135,8 +173,8 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
         tags: z.any().optional(),
       })
       .strict(),
-    async (a) => {
-      const tags = coerceTags(a.tags);
+    async (a: { tags: any; resourceGroupName: string; name: string; location: string; tenantId: string; skuName: string; enableRbacAuthorization: boolean; publicNetworkAccess: string; }) => {
+      const tags = normalizeTags(a.tags) ?? harvestTagsFromArgs(a);
       return clients.keyVaults.create({
         resourceGroupName: a.resourceGroupName,
         name: a.name,
@@ -147,14 +185,16 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
         publicNetworkAccess: a.publicNetworkAccess,
         tags,
       });
-    }
+    },
+    { present: (out: any) => presentKeyVault(out) }
   );
 
   const get_kv = wrapGet(
     n("get_key_vault"),
     "Get Key Vault.",
     z.object({ resourceGroupName: z.string(), name: z.string() }).strict(),
-    async (a) => clients.keyVaults.get(a.resourceGroupName, a.name)
+    async (a: { resourceGroupName: any; name: any; }) => clients.keyVaults.get(a.resourceGroupName, a.name),
+    { present: (out: any) => presentKeyVault(out) }
   );
 
   // ──────────────────────────────────────────────────────────────
@@ -174,8 +214,8 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
         tags: z.any().optional(),
       })
       .strict(),
-    async (a) => {
-      const tags = coerceTags(a.tags);
+    async (a: { tags: any; resourceGroupName: string; name: string; location: string; skuName: string; kind: string; enableHttpsTrafficOnly: boolean; }) => {
+      const tags = normalizeTags(a.tags) ?? harvestTagsFromArgs(a);
       return clients.storageAccounts.create({
         resourceGroupName: a.resourceGroupName,
         name: a.name,
@@ -185,14 +225,16 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
         enableHttpsTrafficOnly: a.enableHttpsTrafficOnly,
         tags,
       });
-    }
+    },
+    { present: (out: any) => presentStorageAccount(out) }
   );
 
   const get_sa = wrapGet(
     n("get_storage_account"),
     "Get a Storage Account.",
     z.object({ resourceGroupName: z.string(), accountName: z.string() }).strict(),
-    async (a) => clients.storageAccounts.get(a.resourceGroupName, a.accountName)
+    async (a: { resourceGroupName: any; accountName: any; }) => clients.storageAccounts.get(a.resourceGroupName, a.accountName),
+    { present: (out: any) => presentStorageAccount(out) }
   );
 
   // ──────────────────────────────────────────────────────────────
@@ -211,8 +253,8 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
         tags: z.any().optional(),
       })
       .strict(),
-    async (a) => {
-      const tags = coerceTags(a.tags);
+    async (a: { tags: any; resourceGroupName: string; name: string; location: string; sku: string; retentionInDays: number; }) => {
+      const tags = normalizeTags(a.tags) ?? harvestTagsFromArgs(a);
       return clients.logAnalytics.create({
         resourceGroupName: a.resourceGroupName,
         name: a.name,
@@ -228,7 +270,7 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
     n("get_log_analytics_workspace"),
     "Get a Log Analytics Workspace.",
     z.object({ resourceGroupName: z.string(), name: z.string() }).strict(),
-    async (a) => clients.logAnalytics.get(a.resourceGroupName, a.name)
+    async (a: { resourceGroupName: any; name: any; }) => clients.logAnalytics.get(a.resourceGroupName, a.name)
   );
 
   // ──────────────────────────────────────────────────────────────
@@ -240,8 +282,8 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
     z
       .object({ resourceGroupName: z.string(), name: z.string(), location: z.string(), addressPrefixes: z.array(z.string()).nonempty(), dnsServers: z.array(z.string()).optional(), tags: z.any().optional() })
       .strict(),
-    async (a) => {
-      const tags = coerceTags(a.tags);
+    async (a: { tags: any; resourceGroupName: string; name: string; location: string; addressPrefixes: string[]; dnsServers: string[]; }) => {
+      const tags = normalizeTags(a.tags) ?? harvestTagsFromArgs(a);
       return clients.networks.createVnet({
         resourceGroupName: a.resourceGroupName,
         name: a.name,
@@ -257,7 +299,7 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
     n("get_virtual_network"),
     "Get a Virtual Network.",
     z.object({ resourceGroupName: z.string(), name: z.string() }).strict(),
-    async (a) => clients.networks.getVnet(a.resourceGroupName, a.name)
+    async (a: { resourceGroupName: any; name: any; }) => clients.networks.getVnet(a.resourceGroupName, a.name)
   );
 
   const create_subnet = wrapCreate(
@@ -275,8 +317,8 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
         tags: z.any().optional(),
       })
       .strict(),
-    async (a) => {
-      const tags = coerceTags(a.tags);
+    async (a: { tags: any; resourceGroupName: string; virtualNetworkName: string; name: string; addressPrefix: string; serviceEndpoints: string[]; delegations: any[]; privateEndpointNetworkPolicies: any; }) => {
+      const tags = normalizeTags(a.tags) ?? harvestTagsFromArgs(a);
       return clients.networks.createSubnet({
         resourceGroupName: a.resourceGroupName,
         virtualNetworkName: a.virtualNetworkName,
@@ -294,7 +336,7 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
     n("get_subnet"),
     "Get a Subnet.",
     z.object({ resourceGroupName: z.string(), virtualNetworkName: z.string(), name: z.string() }).strict(),
-    async (a) => clients.networks.getSubnet(a.resourceGroupName, a.virtualNetworkName, a.name)
+    async (a: { resourceGroupName: any; virtualNetworkName: any; name: any; }) => clients.networks.getSubnet(a.resourceGroupName, a.virtualNetworkName, a.name)
   );
 
   const create_pe = wrapCreate(
@@ -314,8 +356,8 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
         tags: z.any().optional(),
       })
       .strict(),
-    async (a) => {
-      const tags = coerceTags(a.tags);
+    async (a: { tags: any; resourceGroupName: string; name: string; location: string; vnetName: string; subnetName: string; targetResourceId: string; groupIds: string[]; privateDnsZoneGroupName: string; privateDnsZoneIds: string[]; }) => {
+      const tags = normalizeTags(a.tags) ?? harvestTagsFromArgs(a);
       return clients.networks.createPrivateEndpoint({
         resourceGroupName: a.resourceGroupName,
         name: a.name,
@@ -335,7 +377,7 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
     n("get_private_endpoint"),
     "Get a Private Endpoint.",
     z.object({ resourceGroupName: z.string(), name: z.string() }).strict(),
-    async (a) => clients.networks.getPrivateEndpoint(a.resourceGroupName, a.name)
+    async (a: { resourceGroupName: any; name: any; }) => clients.networks.getPrivateEndpoint(a.resourceGroupName, a.name)
   );
 
   // ──────────────────────────────────────────────────────────────
@@ -357,9 +399,9 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
         tags: z.any().optional(),
       })
       .strict(),
-    async (a) => {
+    async (a: { tags: any; resourceGroupName: string; name: string; location: string; kubernetesVersion: string; agentPoolProfiles: any[]; apiServerAccessProfile: any; }) => {
       if (!clients.aks?.createCluster) throw new Error("AKS client not configured");
-      const tags = coerceTags(a.tags);
+      const tags = normalizeTags(a.tags) ?? harvestTagsFromArgs(a);
       return clients.aks.createCluster({
         resourceGroupName: a.resourceGroupName,
         name: a.name,
@@ -376,7 +418,7 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
     n("enable_aks_monitoring"),
     "Enable Container Insights for an AKS cluster (LAW link).",
     z.object({ resourceGroupName: z.string(), clusterName: z.string(), workspaceResourceGroup: z.string(), workspaceName: z.string() }).strict(),
-    async (a) => {
+    async (a: { resourceGroupName: any; clusterName: any; workspaceResourceGroup: any; workspaceName: any; }) => {
       if (!clients.aks?.enableMonitoring) throw new Error("AKS monitoring not configured");
       return clients.aks.enableMonitoring(a);
     }
@@ -386,7 +428,7 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
     n("get_aks_cluster"),
     "Get an AKS cluster.",
     z.object({ resourceGroupName: z.string(), name: z.string() }).strict(),
-    async (a) => {
+    async (a: { resourceGroupName: any; name: any; }) => {
       if (!clients.aks?.get) throw new Error("AKS client not configured");
       return clients.aks.get(a.resourceGroupName, a.name);
     }
@@ -445,5 +487,5 @@ export function makeAzureTools(opts: MakeAzureToolsOptions) {
     ...remediations,
   ];
 
-  return withGovernanceAll(all, evaluateGovernance);
+  return withGovernanceAll(all, evaluate);
 }

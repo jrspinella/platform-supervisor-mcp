@@ -19,6 +19,7 @@ content: Array<
 | { type: "json"; json: any }
 >;
 isError?: boolean;
+_meta?: any;
 }>;
 
 export type ToolDef = {

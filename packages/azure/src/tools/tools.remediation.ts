@@ -2,7 +2,7 @@
 import { z } from "zod";
 import type { ToolDef } from "mcp-http";
 import type { MakeAzureToolsOptions } from "../types.js";
-import { normalizeAzureError, scanSummary, formatTextSummary } from "../utils.js";
+import { formatTextSummary, normalizeAzureError, scanSummary } from "../utils.js";
 
 // Minimal content helpers
 const mjson = (json: any) => [{ type: "json" as const, json }];

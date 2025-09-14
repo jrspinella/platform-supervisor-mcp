@@ -2,11 +2,11 @@
 import { z } from "zod";
 import type { ToolDef } from "mcp-http";
 import type { MakeAzureToolsOptions } from "../types.js";
-import { normalizeAzureError } from "../utils.js";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
+import { normalizeAzureError } from "../utils.js";
 
 /** ARM parameter wrapper */
 function toArmParameters(input?: Record<string, any>): Record<string, { value: any }> | undefined {

@@ -1,5 +1,5 @@
 // packages/azure-core/src/clients.azure-sdk.ts — v2 (deployments at RG/Subscription/MG)
-import { DefaultAzureCredential } from "@azure/identity";
+import { AzureAuthorityHosts, DefaultAzureCredential } from "@azure/identity";
 import { ResourceManagementClient, DeploymentMode } from "@azure/arm-resources";
 import { WebSiteManagementClient } from "@azure/arm-appservice";
 import { KeyVaultManagementClient } from "@azure/arm-keyvault";
@@ -9,6 +9,7 @@ import { NetworkManagementClient } from "@azure/arm-network";
 import { MonitorClient as AzureMonitorClient } from "@azure/arm-monitor";
 import { ContainerServiceClient } from "@azure/arm-containerservice";
 import { ensureAzureCloudEnv, armClientOptions } from "./clouds.js";
+import "dotenv/config";
 import type {
   AzureClients,
   AppServicePlansClient,
@@ -22,6 +23,7 @@ import type {
   AksClient,
   DeploymentsClient,
 } from "./types.js";
+import { presentResourceGroup } from "./utils.js";
 
 export type AzureSdkConfig = {
   subscriptionId?: string;
@@ -80,7 +82,10 @@ export function createAzureSdkClients(cfg?: AzureSdkConfig): AzureClients {
       return res.resourceGroups.createOrUpdate(name, { location, tags });
     },
     async get(name) {
-      return res.resourceGroups.get(name);
+      // inside your handler after creating/fetching the RG:
+      const result = await res.resourceGroups.get(name);
+      // If you also generated a governance markdown string, pass it via opts:
+      return presentResourceGroup(result /*, { governanceMarkdown } */);
     },
   };
 
