@@ -53,7 +53,7 @@
       "properties": {
         "platformSupervisor.routerUrl": {
           "type": "string",
-          "default": "http://127.0.0.1:8700/rpc",
+          "default": "http://127.0.0.1:8701/rpc",
           "description": "Router MCP JSON-RPC URL"
         },
         "platformSupervisor.platformUrl": {
@@ -70,6 +70,7 @@
     "dev": "npm run watch"
   },
   "devDependencies": {
+    "@types/vscode": "^1.91.0",
     "esbuild": "^0.21.5",
     "typescript": "^5.5.0"
   }

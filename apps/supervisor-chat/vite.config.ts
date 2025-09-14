@@ -4,9 +4,9 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // Forward /router -> http://127.0.0.1:8700/rpc
+      // Forward /router -> http://127.0.0.1:8701/rpc
       "/router": {
-        target: "http://127.0.0.1:8700",
+        target: "http://127.0.0.1:8701",
         changeOrigin: true,
         rewrite: (p) => p.replace(/^\/router/, "/rpc")
       },

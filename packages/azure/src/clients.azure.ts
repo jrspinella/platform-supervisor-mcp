@@ -23,7 +23,6 @@ import type {
   AksClient,
   DeploymentsClient,
 } from "./types.js";
-import { presentResourceGroup } from "./utils.js";
 
 export type AzureSdkConfig = {
   subscriptionId?: string;
@@ -83,9 +82,7 @@ export function createAzureSdkClients(cfg?: AzureSdkConfig): AzureClients {
     },
     async get(name) {
       // inside your handler after creating/fetching the RG:
-      const result = await res.resourceGroups.get(name);
-      // If you also generated a governance markdown string, pass it via opts:
-      return presentResourceGroup(result /*, { governanceMarkdown } */);
+      const result = await res.resourceGroups.get(name);      
     },
   };
 

@@ -219,61 +219,54 @@ export function normalizeTags(input: any): Record<string, string> | undefined {
   return coerceTags(input);
 }
 
+function ensureTrailingBlank(md: string) {
+  return /\n\n$/.test(md) ? md : md.replace(/\s*$/, "") + "\n\n";
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Governance presentation card + wrappers
 // ──────────────────────────────────────────────────────────────────────────────
 const UI_BASE = process.env.UI_BASE_URL || "";
 
-function governanceMarkdown(
-  tool: string,
-  block?: GovernanceBlock,
-  quickCmd?: string
-) {
-  const header = `### Governance — \`${tool}\`\n`;
-
-  if (!block) return `${header}> ⚪️ No policy applied`;
+function governanceMarkdown(tool: string, block?: GovernanceBlock, quickCmd?: string) {
+  const header = `\n\n### Governance — \`${tool}\`\n`;
+  if (!block) return `${header}> ⚪️ No policy applied\n`;
 
   const status = String(block.decision || "").toLowerCase();
   const badge =
-    status === "deny"
-      ? "🔴 **Denied**"
-      : status === "warn"
-        ? "🟡 **Warn**"
-        : "🟢 **Allowed**";
+    status === "deny" ? "🔴 **Denied**" :
+    status === "warn" ? "🟡 **Warn**" :
+    "🟢 **Allowed**";
 
-  const controls = (block.controls ?? []).join(", ") || "—";
-  const policyCell = `\`${tool}\``;
+  const lines: string[] = [`${header}**Status:** ${badge}`];
 
-  const lines: string[] = [
-    `${header}**Status:** ${badge}`,
-    "",
-    "| Policies | NIST Controls |",
-    "|---|---|",
-    `| ${policyCell} | ${controls} |`,
-  ];
-
-  const hasReasons = Array.isArray(block.reasons) && block.reasons.length > 0;
-  if (hasReasons && status !== "allow") {
-    lines.push("", "**Reasons**", ...block.reasons!.map((r) => `- ${r}`));
-  }
-
-  const hasSuggestions =
-    Array.isArray(block.suggestions) && block.suggestions.length > 0;
-  if (hasSuggestions) {
+  // Only show grid + reasons/suggestions when NOT allowed
+  if (status !== "allow") {
+    const controls = (block.controls ?? []).join(", ") || "—";
     lines.push(
       "",
-      "**Suggestions**",
-      ...block.suggestions!.map((s) =>
-        s.title ? `- **${s.title}:** ${s.text}` : `- ${s.text}`
-      )
+      "| Policies | NIST Controls |",
+      "|---|---|",
+      `| \`${tool}\` | ${controls} |`,
     );
+
+    if (Array.isArray(block.reasons) && block.reasons.length) {
+      lines.push("", "**Reasons**", ...block.reasons.map(r => `- ${r}`));
+    }
+    if (Array.isArray(block.suggestions) && block.suggestions.length) {
+      lines.push(
+        "",
+        "**Suggestions**",
+        ...block.suggestions.map(s => s.title ? `- **${s.title}:** ${s.text}` : `- ${s.text}`)
+      );
+    }
+    if (quickCmd) {
+      lines.push("", "**Quick fix**", "```bash", quickCmd, "```");
+    }
   }
 
-  if (quickCmd && status !== "allow") {
-    lines.push("", "**Quick fix**", "```bash", quickCmd, "```");
-  }
-
-  return lines.join("\n") + "\n\n"
+  lines.push(""); // trailing newline for clean separation
+  return lines.join("\n");
 }
 
 function buildQuickCommand(
@@ -345,7 +338,8 @@ export async function presentGovernance(
   const quick = buildQuickCommand(toolFq, args, block);
   const md = governanceMarkdown(toolFq, block, quick);
   const link = await maybeLinkToUI(toolFq, block);
-  return mcpText(md + link);
+  // 👇 ensure at least one blank line after governance so the next block starts cleanly
+  return mcpText(ensureTrailingBlank(md + link));
 }
 
 /** Harvest tags from free-form args fields if tags are missing */
@@ -572,234 +566,6 @@ export function wrapGet(
       }
     },
   } satisfies ToolDef;
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Resource presenters (nice, compact cards + portal links)
-// ──────────────────────────────────────────────────────────────────────────────
-export function portalUrlForResourceId(resourceId: string) {
-  const isGov =
-    (process.env.AZURE_AUTHORITY_HOST || "").includes("login.microsoftonline.us") ||
-    process.env.AZURE_CLOUD === "usgovernment";
-  const base = isGov ? "https://portal.azure.us" : "https://portal.azure.com";
-  return `${base}/#resource${resourceId}/overview`;
-}
-
-export function extractRgFromId(id?: string) {
-  const m = id?.match(/\/resourceGroups\/([^/]+)/i);
-  return m?.[1];
-}
-
-/** Pretty Resource Group card */
-export function presentResourceGroup(res: any) {
-  const name = res?.name ?? "—";
-  const location = res?.location ?? "—";
-  const state = res?.properties?.provisioningState ?? "—";
-  const id = res?.id ?? "";
-  const link = id ? `[Open in Azure Portal](${portalUrlForResourceId(id)})` : "";
-
-  const md = [
-    `**Azure Resource Group**`,
-    "",
-    `| Name | Location | State |`,
-    `|---|---|---|`,
-    `| \`${name}\` | \`${location}\` | ${state} |`,
-    "",
-    link,
-    "",
-  ].join("\n");
-
-  return mcpText(md);
-}
-
-export function presentWebApp(site: any) {
-  const name = site?.name ?? "—";
-  const rg = site?.resourceGroup ?? extractRgFromId(site?.id) ?? "—";
-  const loc = site?.location ?? "—";
-  const plan = site?.serverFarmId?.split?.("/")?.pop?.() ?? "—";
-  const tls = site?.properties?.minimumTlsVersion ?? site?.siteConfig?.minTlsVersion ?? "—";
-  const https = (site?.httpsOnly ?? site?.properties?.httpsOnly) ? "enabled" : "disabled";
-  const ftps = site?.siteConfig?.ftpsState ?? site?.properties?.ftpsState ?? "—";
-  const runtime = site?.siteConfig?.linuxFxVersion ?? site?.linuxFxVersion ?? "—";
-  const url = portalUrlForResourceId(site?.id);
-
-  const text = [
-    "**Azure Web App (Linux)**",
-    "",
-    "| Name | Resource Group | Location | Plan | Runtime | TLS min | HTTPS-only | FTPS |",
-    "|---|---|---|---|---|---|---|---|",
-    `| \`${name}\` | \`${rg}\` | \`${loc}\` | \`${plan}\` | \`${runtime}\` | \`${tls}\` | \`${https}\` | \`${ftps}\` |`,
-    "",
-    url ? `[Open in Azure Portal](${url})` : ""
-  ].join("\n");
-  return mcpText(text);
-}
-
-export function presentKeyVault(v: any) {
-  const name = v?.name ?? "—";
-  const rg = v?.resourceGroup ?? extractRgFromId(v?.id) ?? "—";
-  const loc = v?.location ?? "—";
-  const sku = v?.properties?.sku?.name ?? v?.sku?.name ?? "—";
-  const rbac = v?.properties?.enableRbacAuthorization === true ? "enabled" : "disabled";
-  const pna = v?.properties?.publicNetworkAccess ?? "—";
-  const url = portalUrlForResourceId(v?.id);
-
-  const text = [
-    "**Azure Key Vault**",
-    "",
-    "| Name | Resource Group | Location | SKU | RBAC | Public Network Access |",
-    "|---|---|---|---|---|---|",
-    `| \`${name}\` | \`${rg}\` | \`${loc}\` | \`${sku}\` | \`${rbac}\` | \`${pna}\` |`,
-    "",
-    url ? `[Open in Azure Portal](${url})` : ""
-  ].join("\n");
-  return mcpText(text);
-}
-
-export function presentStorageAccount(sa: any) {
-  const name = sa?.name ?? "—";
-  const rg = sa?.resourceGroup ?? extractRgFromId(sa?.id) ?? "—";
-  const loc = sa?.location ?? "—";
-  const kind = sa?.kind ?? "—";
-  const sku = sa?.sku?.name ?? "—";
-  const httpsOnly = (sa?.properties?.supportsHttpsTrafficOnly ?? sa?.supportsHttpsTrafficOnly) ? "true" : "false";
-  const minTls = sa?.properties?.minimumTlsVersion ?? sa?.minimumTlsVersion ?? "—";
-  const url = portalUrlForResourceId(sa?.id);
-
-  const text = [
-    "**Azure Storage Account**",
-    "",
-    "| Name | Resource Group | Location | Kind | SKU | HTTPS-only | Min TLS |",
-    "|---|---|---|---|---|---|---|",
-    `| \`${name}\` | \`${rg}\` | \`${loc}\` | \`${kind}\` | \`${sku}\` | \`${httpsOnly}\` | \`${minTls}\` |`,
-    "",
-    url ? `[Open in Azure Portal](${url})` : ""
-  ].join("\n");
-  return mcpText(text);
-}
-
-export function presentLogAnalyticsWorkspace(w: any) {
-  const name = w?.name ?? "—";
-  const rg = w?.resourceGroup ?? extractRgFromId(w?.id) ?? "—";
-  const loc = w?.location ?? "—";
-  const sku = w?.sku?.name ?? "—";
-  const retention = w?.retentionInDays ?? w?.properties?.retentionInDays ?? "—";
-  const url = portalUrlForResourceId(w?.id);
-
-  const text = [
-    "**Log Analytics Workspace**",
-    "",
-    "| Name | Resource Group | Location | SKU | Retention (days) |",
-    "|---|---|---|---|---|",
-    `| \`${name}\` | \`${rg}\` | \`${loc}\` | \`${sku}\` | \`${retention}\` |`,
-    "",
-    url ? `[Open in Azure Portal](${url})` : ""
-  ].join("\n");
-  return mcpText(text);
-}
-
-export function presentVirtualNetwork(vnet: any) {
-  const name = vnet?.name ?? "—";
-  const rg = vnet?.resourceGroup ?? extractRgFromId(vnet?.id) ?? "—";
-  const loc = vnet?.location ?? "—";
-  const prefixes = vnet?.addressSpace?.addressPrefixes?.join(", ") ?? "—";
-  const ddos = (vnet?.enableDdosProtection || vnet?.ddosProtectionPlan?.id) ? "enabled" : "disabled";
-  const url = portalUrlForResourceId(vnet?.id);
-
-  const text = [
-    "**Virtual Network**",
-    "",
-    "| Name | Resource Group | Location | Address Space | DDoS |",
-    "|---|---|---|---|---|",
-    `| \`${name}\` | \`${rg}\` | \`${loc}\` | \`${prefixes}\` | \`${ddos}\` |`,
-    "",
-    url ? `[Open in Azure Portal](${url})` : ""
-  ].join("\n");
-  return mcpText(text);
-}
-
-export function presentSubnet(snet: any) {
-  const name = snet?.name ?? "—";
-  const rg = extractRgFromId(snet?.id) ?? "—";
-  const vnet = snet?.id?.match?.(/virtualNetworks\/([^/]+)/i)?.[1] ?? "—";
-  const prefix = snet?.addressPrefix ?? "—";
-  const penp = snet?.privateEndpointNetworkPolicies ?? "—";
-  const delegs = Array.isArray(snet?.delegations) ? snet.delegations.length : 0;
-  const svc = Array.isArray(snet?.serviceEndpoints) ? snet.serviceEndpoints.map((s: any) => s?.service || s).join(", ") : "—";
-  const url = portalUrlForResourceId(snet?.id);
-
-  const text = [
-    "**Subnet**",
-    "",
-    "| Name | Resource Group | VNet | Address Prefix | Delegations | Service Endpoints | Private Endpoint Policies |",
-    "|---|---|---|---|---|---|---|",
-    `| \`${name}\` | \`${rg}\` | \`${vnet}\` | \`${prefix}\` | \`${delegs}\` | \`${svc}\` | \`${penp}\` |`,
-    "",
-    url ? `[Open in Azure Portal](${url})` : ""
-  ].join("\n");
-  return mcpText(text);
-}
-
-export function presentPrivateEndpoint(pe: any) {
-  const name = pe?.name ?? "—";
-  const rg = pe?.resourceGroup ?? extractRgFromId(pe?.id) ?? "—";
-  const loc = pe?.location ?? "—";
-  const vnet = pe?.subnet?.id?.match?.(/virtualNetworks\/([^/]+)/i)?.[1] ?? "—";
-  const subnet = pe?.subnet?.id?.split?.("/")?.pop?.() ?? "—";
-  const target = pe?.privateLinkServiceConnections?.[0]?.privateLinkServiceId ?? "—";
-  const url = portalUrlForResourceId(pe?.id);
-
-  const text = [
-    "**Private Endpoint**",
-    "",
-    "| Name | Resource Group | Location | VNet/Subnet | Target |",
-    "|---|---|---|---|---|",
-    `| \`${name}\` | \`${rg}\` | \`${loc}\` | \`${vnet}/${subnet}\` | \`${target}\` |`,
-    "",
-    url ? `[Open in Azure Portal](${url})` : ""
-  ].join("\n");
-  return mcpText(text);
-}
-
-export function presentAppServicePlan(plan: any) {
-  const name = plan?.name ?? "—";
-  const rg = plan?.resourceGroup ?? extractRgFromId(plan?.id) ?? "—";
-  const loc = plan?.location ?? "—";
-  const sku = plan?.sku?.name ?? plan?.properties?.sku?.name ?? "—";
-  const status = plan?.properties?.status ?? "—";
-  const url = portalUrlForResourceId(plan?.id);
-
-  const text = [
-    "**Azure App Service Plan**",
-    "",
-    "| Name | Resource Group | Location | SKU | Status |",
-    "|---|---|---|---|---|",
-    `| \`${name}\` | \`${rg}\` | \`${loc}\` | \`${sku}\` | \`${status}\` |`,
-    "",
-    url ? `[Open in Azure Portal](${url})` : ""
-  ].join("\n");
-  return mcpText(text);
-}
-
-export function presentAksCluster(mc: any) {
-  const name = mc?.name ?? "—";
-  const rg = mc?.resourceGroup ?? extractRgFromId(mc?.id) ?? "—";
-  const loc = mc?.location ?? "—";
-  const ver = mc?.kubernetesVersion ?? "—";
-  const pools = Array.isArray(mc?.agentPoolProfiles) ? mc.agentPoolProfiles.length : (mc?.properties?.agentPoolProfiles?.length ?? "—");
-  const privateCluster = mc?.apiServerAccessProfile?.enablePrivateCluster === true ? "true" : "false";
-  const url = portalUrlForResourceId(mc?.id);
-
-  const text = [
-    "**AKS Cluster**",
-    "",
-    "| Name | Resource Group | Location | Version | Pools | Private Cluster |",
-    "|---|---|---|---|---|---|",
-    `| \`${name}\` | \`${rg}\` | \`${loc}\` | \`${ver}\` | \`${pools}\` | \`${privateCluster}\` |`,
-    "",
-    url ? `[Open in Azure Portal](${url})` : ""
-  ].join("\n");
-  return mcpText(text);
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

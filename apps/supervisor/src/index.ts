@@ -16,7 +16,7 @@ import { stdin as input, stdout as output } from "node:process";
 
 type Json = any;
 
-const ROUTER_RPC = process.env.ROUTER_RPC || "http://127.0.0.1:8700/rpc";
+const ROUTER_RPC = process.env.ROUTER_RPC || "http://127.0.0.1:8701/rpc";
 const PLATFORM_RPC = process.env.PLATFORM_RPC || "http://127.0.0.1:8721/rpc";
 
 const hr = () => console.log("".padEnd(80, "─"));

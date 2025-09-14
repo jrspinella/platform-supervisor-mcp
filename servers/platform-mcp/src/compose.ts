@@ -22,6 +22,7 @@ import { makeAdvisorTools } from "./tools/tools.advisor.js";
 import { autoPlatformAliases } from "./tools/tools.alias.js";
 import { makePolicyTools } from "./tools/tools.policy.js";
 import { makeAtoTools } from "./tools/tools.ato.js";
+import { makePlanTools } from "./tools/tools.plan.js";
 
 // Optional: constrain known ATO domains for type safety (not strictly required)
 type AtoProfileKey =
@@ -122,7 +123,15 @@ export async function composeTools(): Promise<ToolDef[]> {
 
   // 9) platform.* aliases for azure.* tools
   const aliases = autoPlatformAliases(base, ["azure."], "platform.");
+  const catalogRaw = [...base, ...aliases];
 
-  // 10) Audit wrapper last
-  return [...base, ...aliases].map(auditToolWrapper);
+  // Wrap with audit
+  const catalogAudited = catalogRaw.map(auditToolWrapper);
+
+  // Plan tool needs a resolver that sees the audited catalog
+  const lookup = new Map<string, ToolDef>(catalogAudited.map((t) => [t.name, t]));
+  const planTools = makePlanTools((name) => lookup.get(name));
+
+  // Final list (audited tools + plan tool)
+  return [...catalogAudited, ...planTools];
 }

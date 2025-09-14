@@ -11,7 +11,7 @@ export type McpContent =
 export const mcpText = (text: string): McpContent[] => [{ type: "text", text }];
 export const mcpJson  = (json: any): McpContent[] => [{ type: "json", json }];
 
-export const ROUTER_URL = process.env.ROUTER_URL || "http://127.0.0.1:8700";
+export const ROUTER_URL = process.env.ROUTER_URL || "http://127.0.0.1:8701";
 
 /** Small pretty helper */
 export function fmt(obj: any) {

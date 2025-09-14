@@ -9,7 +9,7 @@ import {
   summarizeFindings
 } from "@platform/governance-core"; // adjust if needed
 
-const ROUTER_URL = process.env.ROUTER_URL || "http://127.0.0.1:8700";
+const ROUTER_URL = process.env.ROUTER_URL || "http://127.0.0.1:8701";
 
 async function callRouterTool(name: string, args: any) {
   const r = await fetch(`${ROUTER_URL}/a2a/tools/call`, {

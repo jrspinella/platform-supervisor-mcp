@@ -6,7 +6,7 @@ It routes your prompt to the **Router MCP** (`nl.route`) and calls the **Platfor
 ## Setup
 
 1. Ensure your local services are running:
-   - Router MCP at `http://127.0.0.1:8700/rpc`
+   - Router MCP at `http://127.0.0.1:8701/rpc`
    - Platform MCP at `http://127.0.0.1:8721/rpc`
 
 2. Install deps & watch build:

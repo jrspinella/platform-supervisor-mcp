@@ -65,9 +65,9 @@ async function callPlatformTool(platformUrl: string, callMethod: string, tool: s
 
 // ---------- Activate participant ----------
 export function activate(ctx: vscode.ExtensionContext) {
-  const participant = vscode.chat.createChatParticipant('platform.supervisor', async (request, _context, stream, token) => {
+  const participant = vscode.chat.createChatParticipant('platform.supervisor', async (request: { prompt: any; }, _context: any, stream: { progress: (arg0: string) => void; markdown: (arg0: string) => void; button: (arg0: { title: string; command: string; arguments: { findings: any[]; args: any; platformUrl: string; callMethod: string; }[] | { findings: any[]; args: any; platformUrl: string; callMethod: string; }[]; }) => void; }, token: { onCancellationRequested: (arg0: () => void) => void; isCancellationRequested: any; }) => {
     const cfg = vscode.workspace.getConfiguration('platformSupervisor');
-    const routerUrl = String(cfg.get('routerUrl') || 'http://127.0.0.1:8700/rpc');
+    const routerUrl = String(cfg.get('routerUrl') || 'http://127.0.0.1:8701/rpc');
     const platformUrl = String(cfg.get('platformUrl') || 'http://127.0.0.1:8721/rpc');
 
     // Create AbortSignal from CancellationToken
