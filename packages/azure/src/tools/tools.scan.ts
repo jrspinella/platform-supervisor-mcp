@@ -15,7 +15,7 @@ function renderWebappReport(a: any, findings: any[], summary: any) {
     .join(" · ");
   const rows = (findings ?? []).map((f: any) => {
     const sev = String(f.severity ?? "unknown").toLowerCase();
-    const controls = Array.isArray(f.controlIds) ? f.controlIds.join(", ") : "—";
+    const controls = (f.controlIds ?? f.controls ?? []).join(", ") || "—";
     const suggest = f.suggest || "—";
     return `| \`${f.code}\` | ${sevIcon[sev] ?? "⚪️"} ${sev} | ${controls} | ${suggest} |`;
   }).join("\n") || "| — | — | — | — |";

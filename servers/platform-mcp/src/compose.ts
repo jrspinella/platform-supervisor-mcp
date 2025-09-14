@@ -45,37 +45,27 @@ export async function composeTools(): Promise<ToolDef[]> {
   const azureClients = await createAzureClientsFromEnv();
 
   // 3) Adapt governance-core ATO helpers to the shape azure-core expects
-  const DOMAIN_KEY_MAP: Record<string, AtoProfileKey> = {
-    webapp: "webapp",
-    app: "webapp",
-    appPlan: "appPlan",
-    plan: "appPlan",
-    functionApp: "functionApp",
-    storage: "storageAccount",
-    storageAccount: "storageAccount",
-    sql: "sqlDatabase",
-    sqlDatabase: "sqlDatabase",
-    keyVault: "key_vault",
-    key_vault: "key_vault",
-    network: "network",
-    vnet: "network",
-    logAnalytics: "logAnalyticsWorkspace",
-    log_analytics: "logAnalyticsWorkspace",
-    workspace: "logAnalyticsWorkspace",
-    law: "logAnalyticsWorkspace",
-    resourceGroup: "resourceGroup",
-    rg: "resourceGroup",
+  const DOMAIN_ALIASES: Record<string, string[]> = {
+    webapp: ["webapp", "web_app", "app"],
+    appPlan: ["appPlan", "app_service_plan", "asp", "plan"],
+    storageAccount: ["storageAccount", "storage_account", "sa"],
+    key_vault: ["keyVault", "key_vault", "kv"],
+    logAnalyticsWorkspace: ["logAnalytics", "log_analytics", "logAnalyticsWorkspace", "law", "workspace"],
+    network: ["network", "vnet", "virtualNetwork", "virtual_network"],
+    resourceGroup: ["resourceGroup", "resource_group", "rg"],
   };
 
   const adaptedGetAtoRule = (domain: string, profile: string, code: string) => {
-    const key = DOMAIN_KEY_MAP[domain] ?? (domain as AtoProfileKey);
-    // ✅ correct arg order: (profile, kind, code)
-    const rule = getAtoRule(profile, key, code);
-    if (!rule) return {};
-    return {
-      controlIds: rule.controls || [],
-      suggest: rule.suggest || undefined,
-    };
+    for (const d of DOMAIN_ALIASES[domain] ?? [domain]) {
+      const rule = getAtoRule(profile, d as any, code); // (profile, domain, code)
+      if (rule) {
+        return {
+          controlIds: rule.controls ?? [],
+          suggest: rule.suggest ?? undefined,
+        };
+      }
+    }
+    return null;
   };
 
   const adaptedHasAtoProfile = (_domain: string, profile: string) => hasAtoProfile(profile);

@@ -49,7 +49,7 @@ export function renderRgScanPretty(result: {
   const mkRows = (items: any[], kind: "appServicePlan" | "webApp" | "other") => {
     return items.map((f) => {
       const sev = String(f.severity ?? "unknown").toLowerCase();
-      const controls = (Array.isArray(f.controlIds) && f.controlIds.length) ? f.controlIds.join(", ") : "—";
+      const controls = (f.controlIds ?? f.controls ?? []).join(", ") || "—";
       const suggest = f.suggest ?? "—";
       let res: string;
       if (kind === "appServicePlan") {
