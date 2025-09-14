@@ -14,7 +14,8 @@ const basePort = Number(process.env.PORT || 8701);
 const RE = {
   // intents
   scan: /\bscan\b/i,
-  create: /\b(?:create|provision|build)\b/i,
+  create: /\b(create|provision|init|bootstrap)\b/i,
+  devEnv: /\b(dev(?:eloper)?\s*env(?:ironment)?|developer\s+environment)\b/i,
 
   // workload (create macro)
   workload: /(create\s+a\s+new\s+azure\s+workload|resource group .* then .* web app)/i,
@@ -46,6 +47,35 @@ const RE = {
 
   // "app workloads" detector
   appWorkloads: /\b(?:app(?:lication)?\s*workloads?|workloads?\s*(?:for|of)?\s*apps?)\b/i,
+
+  // GitHub bits
+  repoInline: /\b([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\b/,      // org/repo
+  repoWord: /\b(?:repo|repository)\s+([A-Za-z0-9_.-]{1,100})\b/i,
+  orgWord: /\borg(?:anization)?\s+([A-Za-z0-9_.-]{1,100})\b/i,
+  envWord: /\benvironment\s+([A-Za-z0-9_.-]{1,50})\b/i,
+
+  // org / owner qualifiers
+  orgField: /\borg\s*[:=]\s*([A-Za-z0-9_.-]+)\b/i,
+  ownerField: /\bowner\s*[:=]\s*([A-Za-z0-9_.-]+)\b/i,
+
+  // names
+  repoNameField: /\b(?:name|repo)\s*[:=]\s*([A-Za-z0-9._-]+)\b/i,
+  repoNameLoose: /\brepo\s+(?:named\s+)?([A-Za-z0-9._-]+)\b/i,
+
+  // visibility / template / default branch
+  visField: /\bvisibility\s*[:=]\s*(public|private|internal)\b/i,
+  templateField: /\btemplate\s*[:=]\s*([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\b/i,
+  defaultBranch: /\bdefault\s*branch\s*[:=]\s*([A-Za-z0-9._/-]+)\b/i,
+
+  // add secret
+  addSecret: /\b(add|set)\s+(?:a\s+)?secret\b/i,
+  secretName: /\bsecret\s+(?:named\s+)?([A-Za-z0-9_]+)\b/i,
+  secretField: /\bsecret\s*[:=]\s*([A-Za-z0-9_]+)\b/i,
+  secretValueField: /\bvalue\s*[:=]\s*([^\s].*?)\s*$/i,
+
+  // branch protection
+  protectBranch: /\bprotect\b.*\bbranch\b/i,
+  branchName: /\bbranch\s*[:=]\s*([A-Za-z0-9._/-]+)\b/i,
 };
 
 // tiny helper
@@ -66,6 +96,18 @@ function getRgNameFromText(text: string): string | undefined {
     extractFirst<string>(RE.rgToken, text, 1) ||
     extractFirst<string>(RE.rgLoose, text, 0)
   );
+}
+
+function first(re: RegExp, s: string, g = 1): string | undefined {
+  const m = re.exec(s);
+  return (m && m[g]) || undefined;
+}
+
+// Robust repo owner/org + name extraction
+function parseRepo(text: string) {
+  const org = first(RE.orgField, text) || first(RE.ownerField, text);
+  const name = first(RE.repoNameField, text) || first(RE.repoNameLoose, text);
+  return { org, name };
 }
 
 // Safer location extraction (skips RG tokens misread as regions)
@@ -319,6 +361,59 @@ export async function route(instruction: string) {
       args: { prompt: original, apply: true, profile: ATO_DEFAULT },
       rationale: "create workload detected (macro tool)",
     };
+  }
+
+  const missionIntent = /\b(repo|repository|secret|branch|org|owner)\b/i.test(text);
+  if (hasThenCreate || hasCreateTwice || hasCreateThen) {
+    const plan = await planWithPlanner(instruction);
+    return addGovCtx({
+      tool: missionIntent ? "mission.apply_plan" : "platform.apply_plan",
+      args: { ...plan, render: "full" },
+      rationale: "planned multi-step workload",
+    }, original);
+  }
+
+  const isCreate = RE.create.test(text) && RE.repoWord.test(text);
+  if (isCreate) {
+    const { org, name } = parseRepo(text);
+    const visibility = (first(RE.visField, text) || "private") as "private" | "public" | "internal";
+    const template = first(RE.templateField, text);        // e.g. org/template-repo
+    const default_branch = first(RE.defaultBranch, text);  // optional
+
+    if (org && name) {
+      return {
+        tool: "mission.create_repo",
+        args: { owner: org, name, visibility, template, default_branch },
+        rationale: "create repo detected (owner/name/visibility parsed)"
+      };
+    }
+  }
+
+  // Add secret
+  if (RE.addSecret.test(text)) {
+    const { org, name } = parseRepo(text);
+    const secretName = first(RE.secretField, text) || first(RE.secretName, text);
+    const value = first(RE.secretValueField, text);
+    if (org && name && secretName && value) {
+      return {
+        tool: "mission.add_repo_secret",
+        args: { owner: org, repo: name, secretName, value },
+        rationale: "add repo secret detected"
+      };
+    }
+  }
+
+  // Protect branch
+  if (RE.protectBranch.test(text)) {
+    const { org, name } = parseRepo(text);
+    const branch = first(RE.branchName, text) || first(RE.defaultBranch, text) || "main";
+    if (org && name) {
+      return {
+        tool: "mission.protect_branch",
+        args: { owner: org, repo: name, branch },
+        rationale: "protect branch detected"
+      };
+    }
   }
 
   // Fallback

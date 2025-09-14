@@ -3,16 +3,15 @@ import "dotenv/config";
 import { z } from "zod";
 
 /* -------------------------- Plan schema (unchanged) ------------------------- */
+const StepSchema = z.object({
+  tool: z.string().min(1),
+  args: z.record(z.string(), z.any()).default({}),
+});
+
 export const PlanSchema = z.object({
   apply: z.boolean().default(false),
   profile: z.string().default(process.env.ATO_PROFILE || "default"),
-  steps: z.array(
-    z.object({
-      tool: z.string().min(1), // e.g. "platform.create_resource_group"
-      // Record<string, any>
-      args: z.record(z.string(), z.any()).default({}),
-    })
-  ).min(1).max(20),
+  steps: z.array(StepSchema).min(1).max(20),
 }).strict();
 
 export type Plan = z.infer<typeof PlanSchema>;
@@ -30,6 +29,7 @@ type Plan = {
 };
 
 Available tools:
+# Azure (platform)
 - platform.create_resource_group { name, location, tags? }
 - platform.create_app_service_plan { resourceGroupName, name, location, sku }
 - platform.create_web_app {
@@ -40,30 +40,51 @@ Available tools:
     linuxFxVersion?: string        // e.g. "NODE|20-lts", "DOTNET|8.0"
   }
 
+# GitHub (mission owner)
+- mission.create_repo {
+    owner,                     // org or user
+    name,
+    visibility?: "private" | "public" | "internal",
+    template?: "org/template-repo",
+    default_branch?: string
+  }
+- mission.add_repo_secret {
+    owner, repo,
+    secretName, value,
+    environment?: string       // optional GitHub environment
+  }
+- mission.protect_branch {
+    owner, repo, branch,
+    requireReviews?: boolean,
+    requiredReviewCount?: number,
+    requireStatusChecks?: boolean
+  }
+
 Rules:
 - Preserve user-provided names; do NOT invent placeholder names.
 - If region is not explicitly provided and context implies US Gov cloud, prefer "usgovvirginia".
 - If tags (owner, env, etc.) are provided, include them on the RG step.
-- If the instruction includes a runtime like "runtime NODE|20-lts" (or "DOTNET|8.0"), set linuxFxVersion to that exact token on the Web App step.
-- If the instruction asks for HTTPS-only/TLS 1.2/FTPS disabled, set httpsOnly=true, minimumTlsVersion="1.2", ftpsState="Disabled".
-- “fix web app **X** in **rg-Y**” → 'platform.remediate_webapp_baseline' (dryRun first).  
-- “apply fixes” / “remediate now” → same, 'dryRun:false' (maybe require LAW id).
+- If the instruction includes a runtime like "runtime NODE|20-lts" (or "DOTNET|8.0"),
+  set linuxFxVersion to that exact token on the Web App step.
+- If the instruction asks for HTTPS-only/TLS 1.2/FTPS disabled,
+  set httpsOnly=true, minimumTlsVersion="1.2", ftpsState="Disabled".
+- Azure order: Resource Group → App Service Plan → Web App (only include steps required).
+- GitHub order: Create repo → Add secrets → Protect branch (only include steps required).
+- Prefer the minimum number of steps that satisfies the instruction.
+- For GitHub:
+  - "org foo", "owner foo" or "foo/bar" implies owner=foo and repo=bar.
+  - "template org/template-repo" should populate template.
+  - "default branch main" should populate default_branch.
+  - "add secret NAME value XXX" → mission.add_repo_secret.
+  - "protect branch main" → mission.protect_branch (set requireReviews=false and requireStatusChecks=false unless specified).
+- “fix web app X in rg-Y” → (Azure) not GitHub; use remediation tools if available.
 - Use profile "default" unless the instruction specifies otherwise.
-- Use the minimum number of steps required to satisfy the instruction.
-- If creating a Web App, ensure the RG and App Service Plan are also created in prior steps (unless they already exist).
-- If creating an App Service Plan, ensure the RG is also created in a prior step (unless it already exists).
-- Do NOT include any steps for resources that are not mentioned in the instruction.
-- Do NOT include any steps for resources that likely already exist (e.g. "create web app X in existing rg Y").
-- Do NOT include any steps that are not strictly necessary (e.g. do NOT create an App Service Plan if not creating a Web App).
-- If the instruction is ambiguous or missing required information, make reasonable assumptions but do NOT invent names; prefer to omit optional fields rather than inventing values.
-- If you cannot determine any valid plan from the instruction, return a single step to create a resource group with name "rg-missing" and location "usgovvir
-- Use correct order: RG → Plan → Web App.
 - Output JSON only (no markdown, no comments).
 
 Sanity checks:
 - Tools must exist in the list above.
 - All required args present.
-- Names consistent across steps (web app references the created plan).
+- Names consistent across steps.
 - Default profile "default" if not specified by the user.
 `.trim();
 
@@ -181,6 +202,20 @@ const RE = {
   httpsOnly: /\bhttps[-\s]?only\b/i,
   tls12: /\b(?:tls|min\s*tls)\s*1\.2\b/i,
   ftpsDisabled: /\bftps\s*(?:off|disabled)\b/i,
+  owner: /\b(?:org(?:anization)?|owner)\s+([A-Za-z0-9_.-]{1,100})\b/i,
+  repoName: /\brepo\s+(?:named\s+)?([A-Za-z0-9_.-]{1,100})\b/i,
+  orgRepo: /\b([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\b/, // owner/repo
+  visibility: /\bvisibility\s*[:=]?\s*(public|private|internal)\b/i,
+  template: /\btemplate\s*[:=]?\s*([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\b/i,
+  defaultBranch: /\bdefault\s*branch\s*[:=]?\s*([A-Za-z0-9._/-]+)\b/i,
+
+  addSecret: /\b(add|set)\s+(?:a\s+)?secret\b/i,
+  secretName: /\bsecret\s+(?:named\s+)?([A-Za-z0-9_]+)\b/i,
+  secretField: /\bsecret\s*[:=]\s*([A-Za-z0-9_]+)\b/i,
+  secretValueField: /\bvalue\s*[:=]\s*([^\s].*?)\s*$/i,
+
+  protectBranch: /\bprotect\b.*\bbranch\b/i,
+  branchName: /\bbranch\s*[:=]?\s*([A-Za-z0-9._/-]+)\b/i,
 };
 
 function extractRegion(s: string): string | undefined {
@@ -195,6 +230,73 @@ function extractRegion(s: string): string | undefined {
       return tok;
     })();
   return loc;
+}
+
+function firstMatch(re: RegExp, s: string, g = 1): string | undefined {
+  const m = re.exec(s);
+  return (m && m[g]) || undefined;
+}
+
+function detectMissionIntent(text: string): boolean {
+  return /\b(repo|repository|secret|branch)\b/i.test(text);
+}
+
+function parseRepoOwnerAndName(text: string) {
+  // owner/repo inline wins
+  const or = RE.orgRepo.exec(text);
+  if (or) return { owner: or[1], name: or[2] };
+
+  const owner = firstMatch(RE.owner, text);
+  const name = firstMatch(RE.repoName, text);
+  return { owner, name };
+}
+
+function deterministicMissionPlanFromText(instruction: string): Plan {
+  const text = instruction || "";
+  const { owner, name } = parseRepoOwnerAndName(text);
+  const visibility = (firstMatch(RE.visibility, text) || "private") as "private"|"public"|"internal";
+  const template = firstMatch(RE.template, text);
+  const default_branch = firstMatch(RE.defaultBranch, text);
+
+  const steps: Plan["steps"] = [];
+
+  if (owner && name) {
+    steps.push({
+      tool: "mission.create_repo",
+      args: { owner, name, visibility, ...(template ? { template } : {}), ...(default_branch ? { default_branch } : {}) },
+    });
+  }
+
+  // Secret
+  if (RE.addSecret.test(text)) {
+    const secretName = firstMatch(RE.secretField, text) || firstMatch(RE.secretName, text);
+    const value = firstMatch(RE.secretValueField, text);
+    if (owner && name && secretName && value) {
+      steps.push({
+        tool: "mission.add_repo_secret",
+        args: { owner, repo: name, secretName, value },
+      });
+    }
+  }
+
+  // Protect branch
+  if (RE.protectBranch.test(text)) {
+    const branch = firstMatch(RE.branchName, text) || "main";
+    if (owner && name) {
+      steps.push({
+        tool: "mission.protect_branch",
+        args: { owner, repo: name, branch },
+      });
+    }
+  }
+
+  if (!steps.length) {
+    // no valid mission steps; return a tiny placeholder plan so caller sees something
+    steps.push({ tool: "mission.create_repo", args: { owner: "missing", name: "missing", visibility: "private" } });
+  }
+
+  const plan: Plan = { apply: true, profile: process.env.ATO_PROFILE || "default", steps };
+  return PlanSchema.parse(plan);
 }
 
 function deterministicPlanFromText(instruction: string): Plan {
@@ -268,6 +370,13 @@ function deterministicPlanFromText(instruction: string): Plan {
   return PlanSchema.parse(plan);
 }
 
+function deterministicPlanDispatcher(instruction: string): Plan {
+  if (detectMissionIntent(instruction)) {
+    return deterministicMissionPlanFromText(instruction);
+  }
+  return deterministicPlanFromText(instruction); // your existing Azure plan builder
+}
+
 /* --------------------------- Public planner API ----------------------------- */
 function llmConfigured(): boolean {
   return Boolean(
@@ -293,6 +402,10 @@ export async function planWithPlanner(instruction: string): Promise<Plan> {
         "platform.create_resource_group",
         "platform.create_app_service_plan",
         "platform.create_web_app",
+        // mission owner
+        "mission.create_repo",
+        "mission.add_repo_secret",
+        "mission.protect_branch",
       ]);
       for (const s of plan.steps) if (!allowed.has(s.tool)) throw new Error(`unknown tool ${s.tool}`);
       return plan;
@@ -300,5 +413,5 @@ export async function planWithPlanner(instruction: string): Promise<Plan> {
       // fall through to deterministic
     }
   }
-  return deterministicPlanFromText(instruction);
+  return deterministicPlanDispatcher(instruction);
 }

@@ -287,7 +287,13 @@ export function makeAzureScanTools(opts: MakeAzureToolsOptions & { namespace?: s
   const scan_network_baseline: ToolDef = {
     name: n("scan_network_baseline"),
     description: "Scan a Virtual Network and subnets for baseline network ATO posture (DDOS, PE policies, diagnostics).",
-    inputSchema: z.object({ resourceGroupName: z.string(), vnetName: z.string(), profile: z.string().default("default") }).strict(),
+    inputSchema: z.object({
+      resourceGroupName: z.string(),
+      vnetName: z.string(),
+      profile: z.string().default("default"),
+      excludeFindingsByCode: z.array(z.string()).optional(),
+      minSeverity: z.enum(["info", "low", "medium", "high"]).optional(),
+    }).strict(),
     handler: async (a) => {
       try {
         await ensureAto();
@@ -312,6 +318,11 @@ export function makeAzureScanTools(opts: MakeAzureToolsOptions & { namespace?: s
           return { ...f, controlIds: map.controlIds || [], suggest: map.suggest || undefined };
         });
         const summary = scanSummary(enriched);
+        const filtered = filterFindings(enriched, {
+          minSeverity: a.minSeverity,
+          excludeCodes: a.excludeFindingsByCode,
+        });
+        const filteredSummary = scanSummary(filtered);
         return {
           content: [
             {
@@ -319,16 +330,16 @@ export function makeAzureScanTools(opts: MakeAzureToolsOptions & { namespace?: s
               json: {
                 status: "done",
                 profile,
-                findings: enriched,
-                summary,
+                findings: filtered,
+                summary: filteredSummary,
                 filters: {
                   minSeverity: a.minSeverity,
                   excludeFindingsByCode: a.excludeFindingsByCode,
-                  dropped: (findings?.length ?? 0) - (enriched?.length ?? 0),
+                  dropped: (findings?.length ?? 0) - (filtered?.length ?? 0),
                 },
               },
             },
-            { type: "text" as const, text: formatTextSummary("network", profile, summary) },
+            { type: "text" as const, text: formatTextSummary("network", profile, filteredSummary) },
           ],
         };
       } catch (e: any) {
@@ -672,6 +683,7 @@ export function makeAzureScanTools(opts: MakeAzureToolsOptions & { namespace?: s
         limitPerType: z.number().int().min(1).max(200).default(100),
         excludeFindingsByCode: z.array(z.string()).optional(),
         minSeverity: z.enum(["info", "low", "medium", "high"]).optional(),
+        debugJson: z.boolean().optional(),
       })
       .strict(),
     handler: async (a) => {
@@ -926,29 +938,14 @@ export function makeAzureScanTools(opts: MakeAzureToolsOptions & { namespace?: s
           excludeCodes: a.excludeFindingsByCode,
         });
         const summary = scanSummary(filtered);
-        const md = renderRgScanPretty({
-          scope: { resourceGroupName: a.resourceGroupName },
-          profile,
-          findings: filtered,
-          summary,
-          filters: { dropped: (findings?.length ?? 0) - (filtered?.length ?? 0) },
-        });
+        const dropped = (findings?.length ?? 0) - (filtered?.length ?? 0);
+        const presentation = renderRgScanPretty(
+          { scope: { resourceGroupName: a.resourceGroupName }, profile, findings: filtered as any, summary, filters: { dropped } },
+          { debugJson: Boolean(a.debugJson) } // or env flag
+        );
 
         return {
-          content: [
-            { type: "text", text: md },
-            {
-              type: "json",
-              json: {
-                status: "done",
-                scope: { resourceGroupName: a.resourceGroupName },
-                profile,
-                findings: filtered,
-                summary,
-                filters: { dropped: (findings?.length ?? 0) - (filtered?.length ?? 0) },
-              },
-            },
-          ],
+          content: presentation,
         };
       } catch (e: any) {
         return { content: [{ type: "json" as const, json: normalizeAzureError(e) }], isError: true as const };

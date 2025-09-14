@@ -12,12 +12,15 @@
     "clean": "rimraf dist"
   },
   "dependencies": {
-    "dotenv": "^16.4.5",
-    "js-yaml": "^4.1.0",
-    "mcp-http": "workspace:*",
+    "@octokit/auth-app": "^8.1.0",
+    "@octokit/rest": "^22.0.0",
     "@platform/azure-core": "workspace:*",
     "@platform/github-core": "workspace:*",
     "@platform/governance-core": "workspace:*",
+    "dotenv": "^16.4.5",
+    "js-yaml": "^4.1.0",
+    "mcp-http": "workspace:*",
+    "tweetsodium": "^0.0.6",
     "undici": "^6.19.8",
     "zod": "^3.23.8"
   },

@@ -119,6 +119,9 @@ importers:
 
   apps/supervisor-copilot:
     devDependencies:
+      '@types/vscode':
+        specifier: ^1.91.0
+        version: 1.104.0
       esbuild:
         specifier: ^0.21.5
         version: 0.21.5
@@ -286,6 +289,55 @@ importers:
       mcp-http:
         specifier: workspace:*
         version: link:../../packages/mcp-http
+      undici:
+        specifier: ^6.19.8
+        version: 6.21.3
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+    devDependencies:
+      '@types/js-yaml':
+        specifier: ^4.0.9
+        version: 4.0.9
+      '@types/node':
+        specifier: ^24.3.1
+        version: 24.3.1
+      tsx:
+        specifier: ^4.19.1
+        version: 4.20.5
+      typescript:
+        specifier: ^5.6.2
+        version: 5.9.2
+
+  servers/missionowner-mcp:
+    dependencies:
+      '@octokit/auth-app':
+        specifier: ^8.1.0
+        version: 8.1.0
+      '@octokit/rest':
+        specifier: ^22.0.0
+        version: 22.0.0
+      '@platform/azure-core':
+        specifier: workspace:*
+        version: link:../../packages/azure
+      '@platform/github-core':
+        specifier: workspace:*
+        version: link:../../packages/github
+      '@platform/governance-core':
+        specifier: workspace:*
+        version: link:../../packages/governance
+      dotenv:
+        specifier: ^16.4.5
+        version: 16.6.1
+      js-yaml:
+        specifier: ^4.1.0
+        version: 4.1.0
+      mcp-http:
+        specifier: workspace:*
+        version: link:../../packages/mcp-http
+      tweetsodium:
+        specifier: ^0.0.6
+        version: 0.0.6
       undici:
         specifier: ^6.19.8
         version: 6.21.3
@@ -1096,6 +1148,9 @@ packages:
   '@types/serve-static@1.15.8':
     resolution: {integrity: sha512-roei0UY3LhpOJvjbIP6ZZFngyLKl5dskOtDhxY5THRSpO+ZI+nzJ+m5yUMzGrp89YRa7lvknKkMYjqQFGwA7Sg==}
 
+  '@types/vscode@1.104.0':
+    resolution: {integrity: sha512-0KwoU2rZ2ecsTGFxo4K1+f+AErRsYW0fsp6A0zufzGuhyczc2IoKqYqcwXidKXmy2u8YB2GsYsOtiI9Izx3Tig==}
+
   '@typespec/ts-http-runtime@0.3.0':
     resolution: {integrity: sha512-sOx1PKSuFwnIl7z4RN0Ls7N9AQawmR9r66eI5rFCzLDIs8HTIYrIpH9QjYWoX0lkgGrkLxXhi4QnK7MizPRrIg==}
     engines: {node: '>=20.0.0'}
@@ -1199,6 +1254,9 @@ packages:
 
   before-after-hook@4.0.0:
     resolution: {integrity: sha512-q6tR3RPqIB1pMiTRMFcZwuG5T8vwp+vUvEG0vuI6B+Rikh5BfPp2fQ82c925FOs+b0lcFQ8CFrL+KbilfZFhOQ==}
+
+  blakejs@1.2.1:
+    resolution: {integrity: sha512-QXUSXI3QVc/gJME0dBpXrag1kbzOqCjCX8/b54ntNyW6sjtoqxqRk3LTmXzaJoh71zMsDCjM+47jS7XiwN/+fQ==}
 
   body-parser@1.20.3:
     resolution: {integrity: sha512-7rAxByjUMqQ3/bHJy7D6OGXvx/MMc4IqBn/X0fcM1QUcAItpZrBEYhWGem+tzXH90c+G01ypMcYJBO9Y30203g==}
@@ -2224,6 +2282,13 @@ packages:
     engines: {node: '>=18.0.0'}
     hasBin: true
 
+  tweetnacl@1.0.3:
+    resolution: {integrity: sha512-6rt+RN7aOi1nGMyC4Xa5DdYiukl2UWCbcJft7YhxReBGQD7OAM8Pbxw6YMo4r2diNEA8FEmu32YOn9rhaiE5yw==}
+
+  tweetsodium@0.0.6:
+    resolution: {integrity: sha512-vMglGijHoottUKHWaEFjgzHias6Rl+2h/qljRoebJH9GXjBmB5/C+rttmFo8bw6F0aokguV9QTWTR4P2m5vUvg==}
+    deprecated: 'tweetsodium is deprecated and unmaintained. Please consider using libsodium.js, maintained by the same author as libsodium: https://github.com/jedisct1/libsodium.js'
+
   type-fest@0.12.0:
     resolution: {integrity: sha512-53RyidyjvkGpnWPMF9bQgFtWp+Sl8O2Rp13VavmJgfAP9WWG6q6TkrKU8iyJdnwnfgHI6k2hTlgqH4aSdjoTbg==}
     engines: {node: '>=10'}
@@ -3089,6 +3154,8 @@ snapshots:
       '@types/node': 24.3.1
       '@types/send': 0.17.5
 
+  '@types/vscode@1.104.0': {}
+
   '@typespec/ts-http-runtime@0.3.0':
     dependencies:
       http-proxy-agent: 7.0.2
@@ -3183,6 +3250,8 @@ snapshots:
   balanced-match@1.0.2: {}
 
   before-after-hook@4.0.0: {}
+
+  blakejs@1.2.1: {}
 
   body-parser@1.20.3:
     dependencies:
@@ -4268,6 +4337,13 @@ snapshots:
       get-tsconfig: 4.10.1
     optionalDependencies:
       fsevents: 2.3.3
+
+  tweetnacl@1.0.3: {}
+
+  tweetsodium@0.0.6:
+    dependencies:
+      blakejs: 1.2.1
+      tweetnacl: 1.0.3
 
   type-fest@0.12.0: {}
 

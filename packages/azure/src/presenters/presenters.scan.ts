@@ -1,111 +1,77 @@
-// Severity chips
-const sevIcon: Record<string, string> = {
-  high: "🔴", medium: "🟠", low: "🟡", info: "🔵", unknown: "⚪️",
-};
+// servers/platform-mcp/src/presenters/rg-scan.ts
+type McpContent = { type: "text"; text: string } | { type: "json"; json: any };
 
-function mdTable(rows: string[]) {
-  if (!rows.length) return "| — | — | — | — | — |\n";
-  return rows.join("\n") + "\n";
-}
-
-function portalResourceHint(kind: string) {
-  return kind === "webApp" ? "Web App" :
-         kind === "appServicePlan" ? "App Service Plan" :
-         kind;
+function sevIcon(s: string) {
+  const k = (s || "").toLowerCase();
+  if (k === "high" || k === "critical") return "🔴";
+  if (k === "medium") return "🟠";
+  if (k === "low") return "🟡";
+  if (k === "info") return "🔷";
+  return "⚪️";
 }
 
 export function renderRgScanPretty(result: {
-  scope?: { resourceGroupName?: string };
-  profile?: string;
-  findings?: Array<{
-    code: string;
-    severity?: string;
-    controlIds?: string[];
-    suggest?: string;
-    meta?: Record<string, any>;
-  }>;
-  summary?: { total?: number; bySeverity?: Record<string, number> };
+  scope: { resourceGroupName: string };
+  profile: string;
+  findings: Array<{ code: string; severity: string; meta?: any; controlIds?: string[]; suggest?: string }>;
+  summary: { total: number; bySeverity?: Record<string, number> };
   filters?: { dropped?: number };
-}) {
-  const rg = result.scope?.resourceGroupName || "—";
-  const profile = result.profile || "default";
-  const total = result.summary?.total ?? (result.findings?.length ?? 0);
-  const bySev = result.summary?.bySeverity || {};
-  const sevCounts = Object.entries(bySev)
-    .map(([s, n]) => `${sevIcon[s.toLowerCase?.() || "unknown"] ?? "⚪️"} ${n} ${s}`)
-    .join(" · ");
+}, opts?: { debugJson?: boolean, titlePrefix?: string }): McpContent[] {
 
-  // Partition by resource flavor (best-effort)
-  const appPlan: typeof result.findings = [];
-  const webApp: typeof result.findings = [];
-  const other: typeof result.findings = [];
-  for (const f of result.findings || []) {
-    const m = f.meta || {};
-    if (m.appServicePlanName) appPlan.push(f);
-    else if (m.webAppName) webApp.push(f);
-    else other.push(f);
+  const { scope, profile, findings = [], summary = { total: 0, bySeverity: {} }, filters } = result || {};
+  const rg = scope?.resourceGroupName || "<unknown>";
+  const by = summary.bySeverity || {};
+  const dropped = filters?.dropped ?? 0;
+
+  const header = `### ATO scan — Resource Group \`${rg}\` (profile: \`${profile || "default"}\`)`;
+
+  if ((summary.total ?? findings.length) === 0) {
+    const md = [
+      header,
+      "",
+      "**Findings:** 0",
+      "",
+      "✅ No issues detected for the selected workloads.",
+      dropped ? `\n> (${dropped} findings were filtered out)` : ""
+    ].join("\n");
+    const out: McpContent[] = [{ type: "text", text: md }];
+    if (opts?.debugJson) out.push({ type: "json", json: result });
+    return out;
   }
 
-  const mkRows = (items: any[], kind: "appServicePlan" | "webApp" | "other") => {
-    return items.map((f) => {
-      const sev = String(f.severity ?? "unknown").toLowerCase();
-      const controls = (f.controlIds ?? f.controls ?? []).join(", ") || "—";
-      const suggest = f.suggest ?? "—";
-      let res: string;
-      if (kind === "appServicePlan") {
-        res = `\`${f.meta?.appServicePlanName}\``;
-      } else if (kind === "webApp") {
-        res = `\`${f.meta?.webAppName}\``;
-      } else {
-        res = "`—`";
-      }
-      return `| ${res} | \`${f.code}\` | ${sevIcon[sev] ?? "⚪️"} ${sev} | ${controls} | ${suggest} |`;
-    });
-  };
+  // Summary card
+  const counts = [
+    by.high ? `🔴 high: ${by.high}` : "",
+    by.medium ? `🟠 medium: ${by.medium}` : "",
+    by.low ? `🟡 low: ${by.low}` : "",
+    by.info ? `🔷 info: ${by.info}` : "",
+  ].filter(Boolean).join(" · ");
 
-  const rowsPlan = mkRows(appPlan, "appServicePlan");
-  const rowsWeb  = mkRows(webApp, "webApp");
-  const rowsOther= mkRows(other, "other");
+  const lines: string[] = [
+    header,
+    "",
+    `**Findings:** **${summary.total}**` + (counts ? ` — ${counts}` : ""),
+    dropped ? `\n> (${dropped} findings were filtered out)` : "",
+    "",
+    "#### App Service Plans & Web Apps",
+    "",
+    "| Resource | Code | Severity | Controls | Suggestion |",
+    "|---|---|---:|---|---|",
+  ];
 
-  // Quick actions
-  const quick: string[] = [];
-  // web apps in this RG — example remediate commands
-  for (const f of webApp) {
-    const name = f.meta?.webAppName;
-    if (name) quick.push(`@platform remediate_webapp_baseline {"resourceGroupName":"${rg}","name":"${name}","dryRun":true}`);
-  }
-  // app plans in this RG — example remediate commands (adjust if your tool name differs)
-  for (const f of appPlan) {
-    const name = f.meta?.appServicePlanName;
-    if (name) quick.push(`@platform remediate_appplan_baseline {"resourceGroupName":"${rg}","name":"${name}","dryRun":true}`);
+  for (const f of findings) {
+    const sev = `${sevIcon(f.severity)} ${f.severity}`;
+    const res =
+      f.meta?.appServicePlanName ||
+      f.meta?.webAppName ||
+      f.meta?.name ||
+      "—";
+    const controls = (f.controlIds ?? []).join(", ") || "—";
+    const suggest = f.suggest || "—";
+    lines.push(`| \`${res}\` | \`${f.code}\` | ${sev} | ${controls} | ${suggest} |`);
   }
 
-  const md = [
-    `### ATO scan — **Resource Group** \`${rg}\`  (profile: \`${profile}\`)`,
-    ``,
-    `**Findings:** ${total}${sevCounts ? ` — ${sevCounts}` : ""}`,
-    result.filters?.dropped ? `_(filtered out ${result.filters.dropped})_` : "",
-    ``,
-    webApp.length ? `#### Web Apps (${webApp.length})` : "",
-    webApp.length ? `| Resource | Code | Severity | Controls | Suggestion |
-|---|---|---|---|---|
-${mdTable(rowsWeb)}` : "",
-    appPlan.length ? `#### App Service Plans (${appPlan.length})` : "",
-    appPlan.length ? `| Resource | Code | Severity | Controls | Suggestion |
-|---|---|---|---|---|
-${mdTable(rowsPlan)}` : "",
-    other.length ? `#### Other (${other.length})` : "",
-    other.length ? `| Resource | Code | Severity | Controls | Suggestion |
-|---|---|---|---|---|
-${mdTable(rowsOther)}` : "",
-    quick.length ? `<details><summary>Quick actions</summary>
-
-\`\`\`bash
-${quick.join("\n")}
-\`\`\`
-
-</details>` : "",
-  ].filter(Boolean).join("\n");
-
-  return md;
+  const out: McpContent[] = [{ type: "text", text: lines.join("\n") }];
+  if (opts?.debugJson) out.push({ type: "json", json: result });
+  return out;
 }

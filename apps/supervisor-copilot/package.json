@@ -8,12 +8,15 @@
   },
   "main": "./dist/extension.js",
   "activationEvents": [
-    "onChatParticipant:platform",
+    "onChatParticipant:platform.supervisor",
+    "onChatParticipant:platform.supervisor.missionowner",
     "onStartupFinished",
     "onCommand:platform.supervisor.run",
     "onCommand:platform.supervisor.health"
   ],
-  "enabledApiProposals": ["chatParticipants"],
+  "enabledApiProposals": [
+    "chatParticipants"
+  ],
   "contributes": {
     "chatParticipants": [
       {
@@ -26,6 +29,27 @@
           {
             "name": "create",
             "description": "Run a create operation (e.g. /create resource group …)"
+          },
+          {
+            "name": "scan",
+            "description": "Run a baseline scan (e.g. /scan web app …)"
+          },
+          {
+            "name": "remediate",
+            "description": "Apply safe remediations (plan or apply)"
+          }
+        ]
+      },
+      {
+        "id": "platform.supervisor.missionowner",
+        "name": "missionowner",
+        "fullName": "Platform Mission Owner Agent",
+        "description": "Creates, scans, remediates, and manages GitHub and cloud workloads via the Mission Owner Agent.",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "create",
+            "description": "Run a create operation (e.g. /create repo …)"
           },
           {
             "name": "scan",
@@ -60,6 +84,16 @@
           "type": "string",
           "default": "http://127.0.0.1:8721/rpc",
           "description": "Platform MCP JSON-RPC URL"
+        },
+        "platformSupervisor.missionUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8731/rpc",
+          "description": "Mission Owner MCP JSON-RPC URL"
+        },
+        "platformSupervisor.showJson": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show raw JSON blocks in chat output (off by default)."
         }
       }
     }
