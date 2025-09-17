@@ -78,7 +78,6 @@ export async function composeTools(): Promise<ToolDef[]> {
     getAtoProfile: adaptedGetAtoProfile,
     getAtoRule: adaptedGetAtoRule,
     hasAtoProfile: adaptedHasAtoProfile,
-    namespace: "azure.",
   });
 
   // 5) ATO scan tools (they only need ATO accessors)
@@ -87,13 +86,15 @@ export async function composeTools(): Promise<ToolDef[]> {
     getAtoProfile: adaptedGetAtoProfile,
     getAtoRule: adaptedGetAtoRule,
     hasAtoProfile: adaptedHasAtoProfile,
-    namespace: "azure.",
   });
 
   // 6) Optional remediation helpers
   const azRemediate = makeAzureRemediationTools({
     clients: azureClients,
-    namespace: "azure.",
+    evaluateGovernance,
+    getAtoProfile: adaptedGetAtoProfile,
+    getAtoRule: adaptedGetAtoRule,
+    hasAtoProfile: adaptedHasAtoProfile,
   });
 
   // 7) Advisor + policy + ATO utility tools

@@ -92,16 +92,22 @@
         },
         "platformSupervisor.showJson": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "description": "Show raw JSON blocks in chat output (off by default)."
+        },
+        "platformSupervisor.debug": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show debug information in chat output (off by default)."
         }
       }
     }
   },
   "scripts": {
-    "build": "esbuild src/extension.ts --bundle --platform=node --external:vscode --outfile=dist/extension.js",
+    "build": "tsc -p tsconfig.json",
     "watch": "esbuild src/extension.ts --bundle --platform=node --external:vscode --outfile=dist/extension.js --watch",
-    "dev": "npm run watch"
+    "dev": "npm run watch",
+    "clean": "rimraf dist"
   },
   "devDependencies": {
     "@types/vscode": "^1.91.0",

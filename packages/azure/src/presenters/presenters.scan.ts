@@ -53,7 +53,7 @@ export function renderRgScanPretty(result: {
     `**Findings:** **${summary.total}**` + (counts ? ` — ${counts}` : ""),
     dropped ? `\n> (${dropped} findings were filtered out)` : "",
     "",
-    "#### App Service Plans & Web Apps",
+    "#### Resource Group ATO Scan Results",
     "",
     "| Resource | Code | Severity | Controls | Suggestion |",
     "|---|---|---:|---|---|",
@@ -71,6 +71,123 @@ export function renderRgScanPretty(result: {
     lines.push(`| \`${res}\` | \`${f.code}\` | ${sev} | ${controls} | ${suggest} |`);
   }
 
+  const out: McpContent[] = [{ type: "text", text: lines.join("\n") }];
+  if (opts?.debugJson) out.push({ type: "json", json: result });
+  return out;
+}
+
+
+export function renderAppServiceScanPretty(result: {
+  scope: { resourceGroupName: string; webAppName: string };
+  profile: string;
+  findings: Array<{ code: string; severity: string; meta?: any; controlIds?: string[]; suggest?: string }>;
+  summary: { total: number; bySeverity?: Record<string, number> };
+}, opts?: { debugJson?: boolean, titlePrefix?: string }): McpContent[] {  
+  const { scope, profile, findings = [], summary = { total: 0, bySeverity: {} } } = result || {};
+  const rg = scope?.resourceGroupName || "<unknown>";
+  const app = scope?.webAppName || "<unknown>";
+  const by = summary.bySeverity || {};
+  const header = `### ATO scan — App Service \`${app}\` in Resource Group \`${rg}\` (profile: \`${profile || "default"}\`)`;
+  if ((summary.total ?? findings.length) === 0) {
+    const md = [
+      header,
+      "",
+      "**Findings:** 0",
+      "",
+      "✅ No issues detected for the selected workloads.",
+    ].join("\n");
+    const out: McpContent[] = [{ type: "text", text: md }];
+    if (opts?.debugJson) out.push({ type: "json", json: result });
+    return out;
+  }
+  // Summary card
+  const counts = [
+    by.high ? `🔴 high: ${by.high}` : "",
+    by.medium ? `🟠 medium: ${by.medium}` : "",
+    by.low ? `🟡 low: ${by.low}` : "",
+    by.info ? `🔷 info: ${by.info}` : "",
+  ].filter(Boolean).join(" · ");
+
+  const lines: string[] = [
+    header,
+    "",
+    `**Findings:** **${summary.total}**` + (counts ? ` — ${counts}` : ""),
+    "",
+    "#### App Service ATO Scan Results",
+    "",
+    "| Resource | Code | Severity | Controls | Suggestion |",
+    "|---|---|---:|---|---|",
+  ];
+
+  for (const f of findings) {
+    const sev = `${sevIcon(f.severity)} ${f.severity}`;
+    const res =
+      f.meta?.appServicePlanName ||
+      f.meta?.webAppName ||
+      f.meta?.name ||
+      "—";
+    const controls = (f.controlIds ?? []).join(", ") || "—";
+    const suggest = f.suggest || "—";
+    lines.push(`| \`${res}\` | \`${f.code}\` | ${sev} | ${controls} | ${suggest} |`);
+  }
+
+  const out: McpContent[] = [{ type: "text", text: lines.join("\n") }];
+  if (opts?.debugJson) out.push({ type: "json", json: result });
+  return out;
+}
+
+export function renderWebAppScanPretty(result: {
+  scope: { resourceGroupName: string; webAppName: string };
+  profile: string;
+  findings: Array<{ code: string; severity: string; meta?: any; controlIds?: string[]; suggest?: string }>;
+  summary: { total: number; bySeverity?: Record<string, number> };
+}, opts?: { debugJson?: boolean, titlePrefix?: string }): McpContent[] {
+  const { scope, profile, findings = [], summary = { total: 0, bySeverity: {} } } = result || {};
+  const rg = scope?.resourceGroupName || "<unknown>";
+
+  const app = scope?.webAppName || "<unknown>";
+  const by = summary.bySeverity || {};
+  const header = `### ATO scan — Web App \`${app}\` in Resource Group \`${rg}\` (profile: \`${profile || "default"}\`)`;
+  if ((summary.total ?? findings.length) === 0) {
+    const md = [
+      header,
+      "",
+      "**Findings:** 0",
+      "",
+      "✅ No issues detected for the selected workloads.",
+    ].join("\n");
+    const out: McpContent[] = [{ type: "text", text: md }];
+    if (opts?.debugJson) out.push({ type: "json", json: result });
+    return out;
+  }
+  // Summary card
+  const counts = [
+    by.high ? `🔴 high: ${by.high}` : "",
+    by.medium ? `🟠 medium: ${by.medium}` : "",
+    by.low ? `🟡 low: ${by.low}` : "",
+    by.info ? `🔷 info: ${by.info}` : "",
+  ].filter(Boolean).join(" · ");
+  const lines: string[] = [
+    header,
+    "",
+    `**Findings:** **${summary.total}**` + (counts ? ` — ${counts}` : ""),
+    "",
+    "#### Web App ATO Scan Results",
+    "",
+    "| Resource | Code | Severity | Controls | Suggestion |",
+    "|---|---|---:|---|---|",
+  ];
+  for (const f of findings) {
+    const sev = `${sevIcon(f.severity)} ${f.severity}`;
+    const res =
+      f.meta?.appServicePlanName ||
+      f.meta?.webAppName ||
+      f.meta?.name ||
+      "—";
+    const controls = (f.controlIds ?? []).join(", ") || "—";
+    const suggest = f.suggest || "—";
+    lines.push(`| \`${res}\` | \`${f.code}\` | ${sev} | ${controls} | ${suggest} |`);
+  }
   const out: McpContent[] = [{ type: "text", text: lines.join("\n") }];
   if (opts?.debugJson) out.push({ type: "json", json: result });
   return out;

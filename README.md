@@ -14,7 +14,7 @@ A2. Resource Group (plan → confirm)
 
 You say:
 
-@platform Create a resource group named rg-ml-sbx-jrs in usgovvirginia with tags owner is jrspinella@live.com and env is dev. 
+@platform Ok, Create a resource group named rg-ml-sbx-jrs in usgovvirginia with tags owner is jrspinella@live.com and env is dev. 
 
 Then:
 

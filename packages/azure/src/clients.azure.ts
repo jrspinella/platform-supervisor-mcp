@@ -1,5 +1,5 @@
 // packages/azure-core/src/clients.azure-sdk.ts — v2 (deployments at RG/Subscription/MG)
-import { AzureAuthorityHosts, DefaultAzureCredential } from "@azure/identity";
+import { AzureAuthorityHosts, DefaultAzureCredential, EnvironmentCredential } from "@azure/identity";
 import { ResourceManagementClient, DeploymentMode } from "@azure/arm-resources";
 import { WebSiteManagementClient } from "@azure/arm-appservice";
 import { KeyVaultManagementClient } from "@azure/arm-keyvault";
@@ -51,20 +51,38 @@ async function toArray<T = any>(iter: any): Promise<T[]> {
 }
 
 export function createAzureSdkClients(cfg?: AzureSdkConfig): AzureClients {
-  const cloud = ensureAzureCloudEnv();
+  const cloud = ensureAzureCloudEnv(); // must set login.microsoftonline.us + usgovcloudapi.net
   const subscriptionId = subIdOrThrow(cfg);
-  const credential = cfg?.credential ?? new DefaultAzureCredential({ authorityHost: cloud.authorityHost });
-  const retryOptions = {
-    maxRetries: cfg?.retry?.maxRetries ?? 5,
-    retryDelayInMs: cfg?.retry?.retryDelayInMs ?? 500,
-    maxRetryDelayInMs: cfg?.retry?.maxRetryDelayInMs ?? 4000,
-  } as const;
 
-  const base = armClientOptions();
+  // 👇 Prefer SPN from env for servers; avoid CLI/VSC creds (can be public cloud)
+  const haveSpn =
+    !!process.env.AZURE_TENANT_ID &&
+    !!process.env.AZURE_CLIENT_ID &&
+    !!process.env.AZURE_CLIENT_SECRET;
+
+  const authorityHost =
+    cloud.authorityHost || AzureAuthorityHosts.AzureGovernment; // e.g. https://login.microsoftonline.us
+
+  const credential = haveSpn
+    ? new EnvironmentCredential({ authorityHost })
+    : new DefaultAzureCredential({
+      authorityHost,
+    });
+
+  // 👇 Ensure Gov ARM endpoint is used by all clients
+  const armEndpoint = cloud.resourceManager || "https://management.usgovcloudapi.net";
+
+  // If your armClientOptions() doesn’t already set endpoint, force it:
+  const base = { ...armClientOptions(), endpoint: armEndpoint };
+
   const options: any = {
     ...base,
     userAgentOptions: cfg?.userAgentPrefix ? { userAgentPrefix: cfg.userAgentPrefix } : undefined,
-    retryOptions,
+    retryOptions: {
+      maxRetries: cfg?.retry?.maxRetries ?? 5,
+      retryDelayInMs: cfg?.retry?.retryDelayInMs ?? 500,
+      maxRetryDelayInMs: cfg?.retry?.maxRetryDelayInMs ?? 4000,
+    },
   };
 
   const res = new ResourceManagementClient(credential, subscriptionId, options);
@@ -82,7 +100,8 @@ export function createAzureSdkClients(cfg?: AzureSdkConfig): AzureClients {
     },
     async get(name) {
       // inside your handler after creating/fetching the RG:
-      const result = await res.resourceGroups.get(name);      
+      const result = await res.resourceGroups.get(name);
+      return result;
     },
   };
 
@@ -131,19 +150,30 @@ export function createAzureSdkClients(cfg?: AzureSdkConfig): AzureClients {
   };
 
   const appServicePlans: AppServicePlansClient = {
-    async create(rg, name, location, sku, tags) {
+    async create(rg, name, region, sku, tags) {
+      if (!region) throw new Error("App Service Plan region missing");
       const skuObj = typeof sku === "string" ? { name: sku } : sku;
-      return app.appServicePlans.beginCreateOrUpdateAndWait(rg, name, { location, sku: skuObj, tags } as any);
+
+      const body: any = { location: region, sku: skuObj, tags };
+      console.info("[sdk] appServicePlans.create", { rg, name, region, sku: skuObj }); // <- optional but handy
+
+      return app.appServicePlans.beginCreateOrUpdateAndWait(rg, name, body);
     },
+
     async get(rg, name) {
       return app.appServicePlans.get(rg, name);
     },
+
     async listByResourceGroup(rg) {
       return toArray(app.appServicePlans.listByResourceGroup(rg));
     },
+
     async update(rg, name, patch) {
-      // Implemented via createOrUpdate to ensure compatibility across SDK versions
+      // Reuse current location; Azure requires it on updates
       const cur: any = await app.appServicePlans.get(rg, name);
+      const region = cur?.location;
+      if (!region) throw new Error("Existing App Service Plan has no location");
+
       const mergedSku =
         typeof patch?.sku === "string"
           ? { ...(cur?.sku ?? {}), name: patch.sku }
@@ -154,50 +184,68 @@ export function createAzureSdkClients(cfg?: AzureSdkConfig): AzureClients {
       }
 
       const body: any = {
-        location: cur?.location,
+        location: region,
         tags: patch?.tags ?? cur?.tags,
         sku: mergedSku,
-        zoneRedundant: typeof patch?.zoneRedundant === "boolean" ? patch.zoneRedundant : (cur as any)?.zoneRedundant,
+        zoneRedundant:
+          typeof patch?.zoneRedundant === "boolean"
+            ? patch.zoneRedundant
+            : (cur as any)?.zoneRedundant,
       };
+
+      console.info("[sdk] appServicePlans.update", { rg, name, region, sku: mergedSku }); // optional
+
       return app.appServicePlans.beginCreateOrUpdateAndWait(rg, name, body);
     },
   };
 
+
   const webApps: WebAppsClient = {
     async create(p) {
-      const serverFarmId = `/subscriptions/${subscriptionId}/resourceGroups/${p.resourceGroupName}/providers/Microsoft.Web/serverfarms/${p.appServicePlanName}`;
+      if (!p.resourceGroupName) throw new Error("Web App resourceGroupName missing");
+      if (!p.location) throw new Error("Web App location missing");
+      const serverFarmId =
+        `/subscriptions/${subscriptionId}/resourceGroups/${p.resourceGroupName}` +
+        `/providers/Microsoft.Web/serverfarms/${p.appServicePlanName}`;
+
       const site: any = {
         location: p.location,
         serverFarmId,
-        httpsOnly: p.httpsOnly,
+        httpsOnly: p.httpsOnly ?? true,
+        // Linux web app:
+        kind: "linux",
+        reserved: true,
         siteConfig: {
-          linuxFxVersion: p.linuxFxVersion,
-          ftpsState: p.ftpsState,
-          minTlsVersion: p.minimumTlsVersion,
+          ...(p.minimumTlsVersion ? { minTlsVersion: p.minimumTlsVersion } : {}),  // TLS version
+          ...(p.ftpsState ? { ftpsState: p.ftpsState } : {}),                   // FTPS state
+          ...(p.linuxFxVersion ? { linuxFxVersion: p.linuxFxVersion } : {}) // Linux runtime
         },
         tags: p.tags,
-        kind: "app,linux",
       };
+
       return app.webApps.beginCreateOrUpdateAndWait(p.resourceGroupName, p.name, site);
     },
+
     async get(rg, name) {
       return app.webApps.get(rg, name);
     },
+
     async getConfiguration(rg, name) {
       return app.webApps.getConfiguration(rg, name);
     },
+
     async update(rg, name, patch) {
-      // Implemented via createOrUpdate to be universally available
       const cur: any = await app.webApps.get(rg, name);
       const site: any = {
         location: cur?.location,
         serverFarmId: cur?.serverFarmId,
-        httpsOnly: typeof patch?.httpsOnly === "boolean"
+        httpsOnly: (typeof patch?.httpsOnly === "boolean")
           ? patch.httpsOnly
-          : cur?.httpsOnly ?? cur?.properties?.httpsOnly,
+          : (cur?.httpsOnly ?? cur?.properties?.httpsOnly),
+        kind: cur?.kind || "app,linux",
+        reserved: cur?.reserved ?? true,
         siteConfig: {
           ...(cur?.siteConfig || {}),
-          // Accept either minTlsVersion or minimumTlsVersion in patch
           minTlsVersion:
             patch?.minTlsVersion ??
             patch?.minimumTlsVersion ??
@@ -208,21 +256,39 @@ export function createAzureSdkClients(cfg?: AzureSdkConfig): AzureClients {
         },
         identity: patch?.identity ?? cur?.identity,
         tags: patch?.tags ?? cur?.tags,
-        kind: cur?.kind || "app,linux",
       };
+
       return app.webApps.beginCreateOrUpdateAndWait(rg, name, site);
     },
+
     async updateConfiguration(rg, name, patch) {
       return (app.webApps as any).updateConfiguration(rg, name, patch);
     },
+
     async enableSystemAssignedIdentity(rg, name) {
-      return app.webApps.beginCreateOrUpdateAndWait(rg, name, { identity: { type: "SystemAssigned" } } as any);
+      // Include location + existing fields to avoid serializer errors
+      const cur: any = await app.webApps.get(rg, name);
+
+      const site: any = {
+        location: cur?.location,
+        serverFarmId: cur?.serverFarmId,
+        kind: cur?.kind || "app,linux",
+        reserved: cur?.reserved ?? true,
+        httpsOnly: cur?.httpsOnly ?? cur?.properties?.httpsOnly,
+        siteConfig: cur?.siteConfig,
+        identity: { type: "SystemAssigned" },
+        tags: cur?.tags,
+      };
+
+      return app.webApps.beginCreateOrUpdateAndWait(rg, name, site);
     },
+
     async setAppSettings(rg, name, settings) {
       const props: Record<string, string> = {};
       for (const { name: k, value } of settings) props[k] = value;
       return app.webApps.updateApplicationSettings(rg, name, { properties: props });
     },
+
     async listByResourceGroup(rg) {
       return toArray(app.webApps.listByResourceGroup(rg));
     },

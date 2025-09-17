@@ -304,6 +304,49 @@ async function waitForPropagation(
   }
 }
 
+function deepCollectFindings(obj: any, into: any[] = []): any[] {
+  if (!obj || typeof obj !== "object") return into;
+  if (Array.isArray(obj)) {
+    for (const v of obj) deepCollectFindings(v, into);
+    return into;
+  }
+  for (const [k, v] of Object.entries(obj)) {
+    if (Array.isArray(v) && /^(findings|results|issues|violations|items)$/i.test(k)) {
+      for (const item of v) {
+        if (item && typeof item === "object") into.push(item);
+      }
+    } else if (v && typeof v === "object") {
+      deepCollectFindings(v, into);
+    }
+  }
+  return into;
+}
+
+function collectFindingsFromResponse(res: any): any[] {
+  const findings: any[] = [];
+  const content = Array.isArray(res?.content) ? res.content : [];
+  for (const c of content) {
+    if (c?.type === "json") deepCollectFindings(c.json, findings);
+    if (c?.type === "text" && typeof c.text === "string") {
+      const fences = c.text.match(/```json\s*([\s\S]*?)```/gi) || [];
+      for (const block of fences) {
+        const m = /```json\s*([\s\S]*?)```/i.exec(block);
+        if (!m || !m[1]) continue;
+        try { deepCollectFindings(JSON.parse(m[1]), findings); } catch { /* ignore */ }
+      }
+    }
+  }
+  // light uniq (code + resource-ish)
+  const seen = new Set<string>();
+  return findings.filter(f => {
+    const key = `${String(f.code || "").toUpperCase()}|${f.resourceId || f.resource || f.name || ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+
 /* ─────────────────── Compose per-step display content ──────────────────── */
 
 function buildStepContent(
@@ -318,14 +361,24 @@ function buildStepContent(
   const status: "ok" | "warn" | "error" =
     res?.isError ? "error" : decision === "warn" ? "warn" : "ok";
 
-  // Header
-  out.push(stepHeader(i, toolName, status));
-
-  // If failed, show concise error summary up front
+  // ❌ On failure: DO NOT add a step header; just show a concise error summary + the tool’s content.
   if (res?.isError) {
     const j = firstJsonChunk(res);
     out.push({ type: "text", text: renderErrorSummary(j ?? res) });
+    const content: McpContent[] = asArray(res?.content);
+    if (render === "full") {
+      out.push(...(debugJson ? content : content.filter(isText)));
+    } else {
+      const textParts = content.filter(isText);
+      const jsonParts = content.filter(isJson);
+      if (textParts.length) out.push(...textParts);
+      else if (jsonParts.length && debugJson) out.push(jsonParts[0]);
+    }
+    return out;
   }
+
+  // ✅ Success: show the header first
+  out.push(stepHeader(i, toolName, status));
 
   const content: McpContent[] = asArray(res?.content);
   const textParts = content.filter(isText);
@@ -345,21 +398,17 @@ function buildStepContent(
     return out;
   }
 
-  // full mode: if no text, try fallback pretty first
   if (!textParts.length && jsonParts.length) {
     const fp = fallbackPresenterFromJson(jsonParts[0].json);
     if (fp?.length) out.push(...fp);
   }
 
-  // include original content; optionally filter JSON if debugJson=false
-  if (!debugJson) {
-    out.push(...content.filter(isText));
-  } else {
-    out.push(...content);
-  }
+  if (!debugJson) out.push(...content.filter(isText));
+  else out.push(...content);
 
   return out;
 }
+
 
 /* ────────────────────────────── Public entry ────────────────────────────── */
 
@@ -378,7 +427,6 @@ export function makePlanTools(resolveTool: (name: string) => ToolDef | undefined
 
         if (!tool?.handler) {
           progress.push({ step: i, tool: step.tool, status: "error", error: "unknown tool" });
-          transcript.push(stepHeader(i, step.tool, "error"));
           transcript.push({ type: "text", text: `**Error**\n> Tool not found: \`${step.tool}\`` });
           return { content: [...transcript, { type: "json" as const, json: { status: "stopped", progress } }], isError: true };
         }
@@ -392,11 +440,11 @@ export function makePlanTools(resolveTool: (name: string) => ToolDef | undefined
           const denied = res?._meta?.governance?.decision === "deny";
           const failed = Boolean(res?.isError || denied);
 
-          // Render this step (header + pretty + optional JSON)
-          transcript.push(...buildStepContent(i, step.tool, res, plan.render, plan.debugJson));
+          // render once
+          const rendered = buildStepContent(i, step.tool, failed ? { ...res, isError: true } : res, plan.render, plan.debugJson);
+          transcript.push(...rendered);
 
           if (failed) {
-            // Add Next steps suggestions
             const errObj = extractErrorObject(res) ?? res;
             const failure = classifyFailure(errObj);
             const fixes = suggestNextSteps(step.tool, mergedArgs, failure);
@@ -404,23 +452,31 @@ export function makePlanTools(resolveTool: (name: string) => ToolDef | undefined
 
             progress.push({ step: i, tool: step.tool, status: "error" });
             return {
-              content: [...transcript, renderPlanSummary("stopped", progress), ...(plan.debugJson ? [{ type: "json" as const, json: { status: "stopped", progress } }] : [])],
+              content: [
+                ...transcript,
+                renderPlanSummary("stopped", progress),
+                ...(plan.debugJson ? [{ type: "json" as const, json: { status: "stopped", progress } }] : []),
+              ],
               isError: true,
             };
           }
 
-          progress.push({ step: i, tool: step.tool, status: "ok" });
+          // success: add breadcrumb for findings so VS Code can show buttons
+          const stepFindings = collectFindingsFromResponse(res);
+          if (stepFindings.length) {
+            transcript.push({ type: "json", json: { findings: stepFindings } });
+          }
 
-          // Wait for propagation after create RG / create plan
-          try { await waitForPropagation(step.tool, mergedArgs, resolveTool); } catch { /* don't fail plan on waiter */ }
+          progress.push({ step: i, tool: step.tool, status: "ok" });
+          try { await waitForPropagation(step.tool, mergedArgs, resolveTool); } catch { /* ignore waiter */ }
 
         } catch (e: any) {
           const msg = e?.message || String(e);
           progress.push({ step: i, tool: step.tool, status: "error", error: msg });
-          transcript.push(stepHeader(i, step.tool, "error"));
           transcript.push({ type: "text", text: renderErrorSummary({ error: { message: msg } }) });
           return { content: [...transcript, { type: "json" as const, json: { status: "stopped", progress } }], isError: true };
         }
+
       }
 
       // All steps completed

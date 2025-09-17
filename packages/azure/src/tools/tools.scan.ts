@@ -187,7 +187,7 @@ export function makeAzureScanTools(opts: MakeAzureToolsOptions & { namespace?: s
           content: [
             // put text (markdown) FIRST so Copilot shows it nicely
             { type: "text" as const, text: md },
-            { type: "json" as const, json: { status: "done", profile: a.profile, findings: enriched, summary } },
+            { type: "json", json: { findings, count: findings.length, kind: "appplan" /* or rg/plan */, resourceGroupName: a.resourceGroupName, name: a.name } }
           ],
         };
       } catch (e: any) {
@@ -272,7 +272,7 @@ export function makeAzureScanTools(opts: MakeAzureToolsOptions & { namespace?: s
           content: [
             // put text (markdown) FIRST so Copilot shows it nicely
             { type: "text" as const, text: md },
-            { type: "json" as const, json: { status: "done", profile: a.profile, findings: enriched, summary } },
+           { type: "json", json: { findings, count: findings.length, kind: "webapp" /* or rg/plan */, resourceGroupName: a.resourceGroupName, name: a.name } }
           ],
         };
       } catch (e: any) {
@@ -323,24 +323,15 @@ export function makeAzureScanTools(opts: MakeAzureToolsOptions & { namespace?: s
           excludeCodes: a.excludeFindingsByCode,
         });
         const filteredSummary = scanSummary(filtered);
+        
+        const dropped = (findings?.length ?? 0) - (filtered?.length ?? 0);
+        const presentation = renderRgScanPretty(
+          { scope: { resourceGroupName: a.resourceGroupName }, profile, findings: filtered as any, summary, filters: { dropped } },
+          { debugJson: Boolean(a.debugJson) } // or env flag
+        );
+
         return {
-          content: [
-            {
-              type: "json" as const,
-              json: {
-                status: "done",
-                profile,
-                findings: filtered,
-                summary: filteredSummary,
-                filters: {
-                  minSeverity: a.minSeverity,
-                  excludeFindingsByCode: a.excludeFindingsByCode,
-                  dropped: (findings?.length ?? 0) - (filtered?.length ?? 0),
-                },
-              },
-            },
-            { type: "text" as const, text: formatTextSummary("network", profile, filteredSummary) },
-          ],
+          content: presentation,
         };
       } catch (e: any) {
         return { content: [{ type: "json" as const, json: normalizeAzureError(e) }], isError: true as const };
@@ -639,24 +630,14 @@ export function makeAzureScanTools(opts: MakeAzureToolsOptions & { namespace?: s
           excludeCodes: a.excludeFindingsByCode,
         });
         const summary = scanSummary(filtered);
+        const dropped = (findings?.length ?? 0) - (filtered?.length ?? 0);
+        const presentation = renderRgScanPretty(
+          { scope: { resourceGroupName: a.resourceGroupName }, profile, findings: filtered as any, summary, filters: { dropped } },
+          { debugJson: Boolean(a.debugJson) } // or env flag
+        );
+
         return {
-          content: [
-            {
-              type: "json" as const,
-              json: {
-                status: "done",
-                profile,
-                findings: filtered,
-                summary,
-                filters: {
-                  minSeverity: a.minSeverity,
-                  excludeFindingsByCode: a.excludeFindingsByCode,
-                  dropped: (findings?.length ?? 0) - (filtered?.length ?? 0),
-                },
-              },
-            },
-            { type: "text" as const, text: formatTextSummary("workload", profile, summary) },
-          ],
+          content: presentation,
         };
       } catch (e: any) {
         return { content: [{ type: "json" as const, json: normalizeAzureError(e) }], isError: true as const };
@@ -946,6 +927,13 @@ export function makeAzureScanTools(opts: MakeAzureToolsOptions & { namespace?: s
 
         return {
           content: presentation,
+          json: {
+            findings,
+            count: findings.length,
+            kind: "rg",
+            resourceGroupName: a.resourceGroupName,
+            name: a.name,
+          },
         };
       } catch (e: any) {
         return { content: [{ type: "json" as const, json: normalizeAzureError(e) }], isError: true as const };

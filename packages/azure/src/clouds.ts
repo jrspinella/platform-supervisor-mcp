@@ -1,4 +1,5 @@
-// packages/azure-core/src/clouds.ts
+import "dotenv/config";
+
 export type AzureCloud = {
   name: "public" | "usgov" | "china";
   authorityHost: string;

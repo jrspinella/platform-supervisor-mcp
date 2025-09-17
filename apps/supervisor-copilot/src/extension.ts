@@ -125,16 +125,90 @@ function renderContentChunks(
   }
 }
 
-function pickFindings(stream: VSStream, contents: McpContent[], token: vscode.CancellationToken): any[] {
-  // Look for a JSON chunk with `findings`
+function pickFindings(
+  stream: VSStream,
+  contents: McpContent[],
+  token: vscode.CancellationToken
+): any[] {
   if (token.isCancellationRequested) return [];
+
+  const debug = !!vscode.workspace.getConfiguration('platformSupervisor').get<boolean>('debug');
+  const all: any[] = [];
+  let sawJson = false;
+
+  const looksLikeFinding = (x: any) =>
+    x && typeof x === "object" &&
+    (
+      typeof x.code === "string" ||
+      typeof x.severity === "string" ||
+      Array.isArray(x.controlIds) ||
+      typeof x.resourceId === "string" ||
+      typeof x.resource === "string"
+    );
+
+  const addFromArray = (arr: any[]) => {
+    for (const f of arr) if (looksLikeFinding(f)) all.push(f);
+  };
+
+  // walk any object graph and collect arrays named findings / results / issues / violations / items
+  const walk = (node: any) => {
+    if (!node || typeof node !== "object") return;
+    for (const [k, v] of Object.entries(node)) {
+      if (Array.isArray(v)) {
+        const key = k.toLowerCase();
+        if (key === "findings" || key === "results" || key === "issues" || key === "violations" || key === "items") {
+          addFromArray(v);
+        } else {
+          // some tools return { scan: { list: [ {code:...}, ... ] } }
+          addFromArray(v);
+        }
+      } else if (v && typeof v === "object") {
+        walk(v);
+      }
+    }
+  };
+
+  // 1) JSON chunks
   for (const c of contents) {
-    if (isJsonContent(c) && c.json?.findings && Array.isArray(c.json.findings)) {
-      return c.json.findings;
+    if (c.type === "json") {
+      sawJson = true;
+      try { walk(c.json); } catch { /* ignore */ }
     }
   }
-  return [];
+
+  // 2) Text chunks: parse the first fenced json block if present
+  for (const c of contents) {
+    if (c.type === "text" && typeof c.text === "string") {
+      const fences = c.text.match(/```json\s*([\s\S]*?)```/gi) || [];
+      for (const block of fences) {
+        const m = /```json\s*([\s\S]*?)```/i.exec(block);
+        if (!m || !m[1]) continue;
+        try {
+          const j = JSON.parse(m[1]);
+          sawJson = true;
+          walk(j);
+        } catch { /* ignore */ }
+      }
+    }
+  }
+
+  // unique by code + resourceId/name
+  const seen = new Set<string>();
+  const uniq = all.filter((f) => {
+    const key = `${String(f.code || "").toUpperCase()}|${f.resourceId || f.resource || f.name || ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  if (debug && sawJson && uniq.length === 0) {
+    stream.markdown("_(debug: saw JSON but no findings signature — check server payload keys/types)_");
+  }
+
+  return uniq;
 }
+
+
 
 /* ─────────────────────────── Platform participant ─────────────────────────── */
 

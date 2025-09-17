@@ -17,12 +17,16 @@ export async function createAzureClientsFromEnv(): Promise<AzureClients> {
   ensureAzureCloudEnv();
 
   const subscriptionId = process.env.AZURE_SUBSCRIPTION_ID;
+  const tenantId = process.env.AZURE_TENANT_ID;
+  const clientId = process.env.AZURE_CLIENT_ID;
+  const clientSecret = process.env.AZURE_CLIENT_SECRET;
   if (!subscriptionId) {
     throw new Error("AZURE_SUBSCRIPTION_ID is required to create Azure clients");
   }
 
   return createAzureSdkClients({
     subscriptionId,
+    // Optional: custom user-agent prefix for easier tracking in Azure logs
     userAgentPrefix: "platform-mcp",
   }) as unknown as AzureClients;
 }

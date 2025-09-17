@@ -235,8 +235,8 @@ function governanceMarkdown(tool: string, block?: GovernanceBlock, quickCmd?: st
   const status = String(block.decision || "").toLowerCase();
   const badge =
     status === "deny" ? "🔴 **Denied**" :
-    status === "warn" ? "🟡 **Warn**" :
-    "🟢 **Allowed**";
+      status === "warn" ? "🟡 **Warn**" :
+        "🟢 **Allowed**";
 
   const lines: string[] = [`${header}**Status:** ${badge}`];
 
@@ -500,8 +500,9 @@ export function wrapCreate(
         };
       } catch (e: any) {
         const err = normalizeAzureError(e);
+        const msg = `❌ ${name} failed: ${err.error.code ?? err.error.type ?? "Error"} — ${err.error.message}`;
         return {
-          content: [...govContent, ...mcpJson(err)],
+          content: [...govContent, ...mcpText(msg), ...mcpJson(err)],
           isError: true,
           _meta: govBlock ? { governance: govBlock, blocked: false } : undefined,
         };
